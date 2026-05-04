@@ -1,0 +1,45 @@
+# ESP32 Printer Client - SDK Configuration Defaults
+# For ESP-IDF v5.x / ESP32-S3
+# These are applied automatically at build time if sdkconfig does not exist.
+
+# ── Target ──────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32s3"
+
+# ── WiFi ────────────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_TX_BUFFER_TYPE_DYNAMIC=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+
+# ── TCP/IP Stack (LwIP) ──────────────────────────────────────────────────
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5744
+CONFIG_LWIP_TCP_WND_DEFAULT=5744
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=6
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=6
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072
+
+# ── WebSocket client ─────────────────────────────────────────────────────
+CONFIG_WEBSOCKET_BUFFER_SIZE=4096
+CONFIG_ESP_WEBSOCKET_CLIENT_BUFFER_SIZE=4096
+
+# ── NVS ─────────────────────────────────────────────────────────────────
+CONFIG_NVS_ENCRYPTION=n
+
+# ── FreeRTOS ─────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+
+# ── Logging ──────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# ── Heap / Memory ────────────────────────────────────────────────────────
+CONFIG_ESP_SYSTEM_CHECK_INT_LEVEL_5=y
+
+# ── Partition table ──────────────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# ── ESP-NETIF ────────────────────────────────────────────────────────────
+CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=120
