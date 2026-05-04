@@ -1,0 +1,38 @@
+name: ESP-IDF CI Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build for ESP32-S3
+    runs-on: ubuntu-latest
+    
+    # We use the official Espressif Docker image. 
+    # 'latest' tag will automatically track the newest stable ESP-IDF release.
+    container:
+      image: espressif/idf:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build project
+        run: |
+          # The idf environment variables are already set in the espressif/idf docker image.
+          # We just need to execute the idf.py commands.
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-binaries
+          path: |
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/*.bin
+          retention-days: 7
