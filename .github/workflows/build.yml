@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     
     # We use the official Espressif Docker image. 
-    # 'latest' tag will automatically track the newest stable ESP-IDF release.
+    # Pinning to a v5.x release branch to match the local v5.x environment.
     container:
-      image: espressif/idf:latest
+      image: espressif/idf:release-v5.3
 
     steps:
       - name: Checkout repository
