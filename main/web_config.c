@@ -7,6 +7,8 @@
 #include "config.h"
 #include "printer.h"
 #include "wifi_manager.h"
+#include "wifi_http.h"
+#include "wifi_portal.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -83,8 +85,15 @@ static const char *html_page =
 "  <h3 id='t_cfg_title'>配置向导</h3>"
 "  <div class='step'>"
 "    <h4 id='t_step1'>第一步：连接店内 WiFi</h4>"
-"    <div class='group'><label id='t_ssid'>WiFi 名称</label><input type='text' id='wifi_ssid'></div>"
+"    <div class='group'><label id='t_ssid'>WiFi 名称</label>"
+"      <div style='display:flex;gap:8px'>"
+"        <select id='wifi_ssid' style='flex:1;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:16px;background:#fafafa'></select>"
+"        <button onclick='scanWifi()' style='padding:12px 16px;border:1px solid #ddd;border-radius:6px;background:#f0f0f0;cursor:pointer;white-space:nowrap' id='t_btn_scan'>扫描</button>"
+"      </div>"
+"      <input type='text' id='wifi_ssid_manual' placeholder='或手动输入SSID' style='margin-top:8px'>"
+"    </div>"
 "    <div class='group'><label id='t_pass'>WiFi 密码</label><input type='text' id='wifi_pass' placeholder='********'></div>"
+"    <div id='wifi_st_box' style='background:#f0f7ff;padding:10px;border-radius:6px;margin-top:8px;font-size:13px'></div>"
 "  </div>"
 "  <div class='step'>"
 "    <h4 id='t_step2'>第二步：连接打印机</h4>"
@@ -135,7 +144,7 @@ static const char *html_page =
 "function loadData() {"
 "  fetch('/api/status').then(r=>r.json()).then(d => {"
 "    currentStatus = d; renderStatus();"
-"    document.getElementById('wifi_ssid').value = d.cfg.wifi_ssid || '';"
+"    document.getElementById('wifi_ssid_manual').value = d.cfg.wifi_ssid || '';"
 "    document.getElementById('store_id').value = d.cfg.store_id || '';"
 "    document.getElementById('device_id').value = d.cfg.device_id || '';"
 "    document.getElementById('server_url').value = d.cfg.server_url || '';"
@@ -153,7 +162,7 @@ static const char *html_page =
 "function toggleStatic() { document.getElementById('static-fields').classList.toggle('hidden', !document.getElementById('use_static_ip').checked); }"
 "function saveConfig() {"
 "  const p = {"
-"    wifi_ssid: document.getElementById('wifi_ssid').value,"
+"    wifi_ssid: getSelectedSSID(),"
 "    wifi_pass: document.getElementById('wifi_pass').value,"
 "    store_id: document.getElementById('store_id').value,"
 "    device_id: document.getElementById('device_id').value,"
@@ -184,7 +193,28 @@ static const char *html_page =
 "  });"
 "}"
 "function clearConfig() { if(confirm(dict[lang].msg_reset)) { fetch('/api/clear', { method:'POST' }).then(()=> { alert(dict[lang].msg_reset_ok); setTimeout(()=>location.reload(), 3000); }); } }"
-"window.onload = function() { setLang('zh'); loadData(); setInterval(()=>fetch('/api/status').then(r=>r.json()).then(d=>{currentStatus=d;renderStatus();}), 5000); };"
+"async function scanWifi() {"
+"  const btn=document.getElementById('t_btn_scan'); btn.disabled=true; btn.innerText='...';"
+"  try {"
+"    const r=await fetch('/wifi_scan'); const d=await r.json();"
+"    const sel=document.getElementById('wifi_ssid');"
+"    sel.innerHTML='<option value=\"\">'+(lang==='zh'?'选择WiFi':'Select WiFi')+'</option>';"
+"    d.forEach(ap=>{ const o=document.createElement('option'); o.value=ap.ssid; o.text=ap.ssid+' ('+ap.rssi+'dBm)'; sel.appendChild(o); });"
+"  } catch(e){ console.error(e); }"
+"  btn.disabled=false; btn.innerText=lang==='zh'?'扫描':'Scan';"
+"}"
+"function getSelectedSSID() {"
+"  const m=document.getElementById('wifi_ssid_manual').value;"
+"  return m||document.getElementById('wifi_ssid').value;"
+"}"
+"function updateWifiStatus() {"
+"  fetch('/wifi_status').then(r=>r.json()).then(s=>{"
+"    const box=document.getElementById('wifi_st_box');"
+"    if(s.connected) box.innerHTML='<span style=\"color:green\">✓ '+(lang==='zh'?'已连接':'Connected')+': '+s.ssid+' ('+s.rssi+'dBm, '+s.quality+') IP: '+s.ip+'</span>';"
+"    else box.innerHTML='<span style=\"color:orange\">'+(lang==='zh'?'未连接WiFi':'WiFi Disconnected')+'</span>';"
+"  }).catch(()=>{});"
+"}"
+"window.onload = function() { setLang('zh'); loadData(); scanWifi(); updateWifiStatus(); setInterval(()=>fetch('/api/status').then(r=>r.json()).then(d=>{currentStatus=d;renderStatus();}), 5000); setInterval(updateWifiStatus, 5000); };"
 "</script></body></html>";
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
@@ -251,13 +281,13 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     
     cJSON_AddStringToObject(root, "mode", s_mode == WEB_CONFIG_MODE_AP ? "ap" : "sta");
-    cJSON_AddBoolToObject(root, "wifi_connected", wifi_manager_is_connected());
+    cJSON_AddBoolToObject(root, "wifi_connected", wifi_mgr_is_connected());
     cJSON_AddBoolToObject(root, "ws_connected", websocket_client_is_connected());
     cJSON_AddBoolToObject(root, "printer_reachable", printer_test_connection(cfg->printer_ip, cfg->printer_port));
 
     /* Get IP */
     char ip_str[16] = "";
-    if (wifi_manager_is_connected()) {
+    if (wifi_mgr_is_connected()) {
         esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
         if (netif) {
             esp_netif_ip_info_t ip_info;
@@ -463,7 +493,7 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
     s_order_queue = order_queue;
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 20;
     httpd_handle_t server = NULL;
 
     ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);
@@ -516,6 +546,14 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &uri_post_clear);
+
+        /* Register WiFi scan/status/connect endpoints */
+        wifi_http_register_handlers(server);
+
+        /* Register captive portal redirects (must be last) */
+        if (mode == WEB_CONFIG_MODE_AP) {
+            wifi_portal_http_register(server);
+        }
 
         return ESP_OK;
     }

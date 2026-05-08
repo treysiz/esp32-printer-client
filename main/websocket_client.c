@@ -11,6 +11,7 @@
 #include "config.h"
 #include "printer.h"
 #include "wifi_manager.h"
+#include "wifi_status.h"
 
 #include "esp_log.h"
 #include "esp_websocket_client.h"
@@ -310,7 +311,7 @@ static void ws_client_task(void *arg)
 
     while (1) {
         /* Wait for WiFi to be connected */
-        EventGroupHandle_t wifi_eg = wifi_manager_get_event_group();
+        EventGroupHandle_t wifi_eg = wifi_mgr_get_event_group();
         if (wifi_eg) {
             xEventGroupWaitBits(wifi_eg, WIFI_CONNECTED_BIT,
                                 pdFALSE, pdTRUE, portMAX_DELAY);

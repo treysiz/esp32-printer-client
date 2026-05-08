@@ -98,7 +98,15 @@ static void printer_task(void *arg)
 {
     printer_task_params_t *params = (printer_task_params_t *)arg;
     const device_config_t *cfg = config_get();
-    print_order_t order;
+    
+    /* Allocate the large order buffer on the heap to avoid blowing up the stack */
+    print_order_t *order = malloc(sizeof(print_order_t));
+    if (!order) {
+        ESP_LOGE(TAG, "Failed to allocate memory for print order!");
+        vTaskDelete(NULL);
+        return;
+    }
+
     print_result_t result;
 
     ESP_LOGI(TAG, "Printer task started (printer=%s:%u, max_retry=%d)",
@@ -106,26 +114,27 @@ static void printer_task(void *arg)
 
     while (1) {
         /* Block waiting for an order (indefinitely) */
-        if (xQueueReceive(params->order_queue, &order, portMAX_DELAY) != pdTRUE) {
+        if (xQueueReceive(params->order_queue, order, portMAX_DELAY) != pdTRUE) {
+            vTaskDelay(pdMS_TO_TICKS(200)); /* Failsafe delay if queue errors */
             continue;
         }
 
         ESP_LOGI(TAG, ">>> Received order [%s], length=%d",
-                 order.order_id, (int)strlen(order.content));
+                 order->order_id, (int)strlen(order->content));
 
         /* Attempt to print with retries */
         memset(&result, 0, sizeof(result));
-        strncpy(result.order_id, order.order_id, MAX_ORDER_ID_LEN);
+        strncpy(result.order_id, order->order_id, MAX_ORDER_ID_LEN);
 
         bool printed = false;
         char reason[64] = {0};
 
         for (int attempt = 1; attempt <= PRINT_MAX_RETRIES; attempt++) {
             ESP_LOGI(TAG, "Print attempt %d/%d for order [%s]",
-                     attempt, PRINT_MAX_RETRIES, order.order_id);
+                     attempt, PRINT_MAX_RETRIES, order->order_id);
 
             if (send_to_printer(cfg->printer_ip, cfg->printer_port,
-                                order.content, strlen(order.content),
+                                order->content, strlen(order->content),
                                 reason, sizeof(reason))) {
                 printed = true;
                 break;
@@ -134,7 +143,7 @@ static void printer_task(void *arg)
             ESP_LOGW(TAG, "Print attempt %d failed: %s", attempt, reason);
 
             if (attempt < PRINT_MAX_RETRIES) {
-                /* Wait before retry: 2s, 4s */
+                /* Wait before retry */
                 vTaskDelay(pdMS_TO_TICKS(2000 * attempt));
             }
         }
@@ -143,20 +152,25 @@ static void printer_task(void *arg)
         if (printed) {
             result.status = PRINT_STATUS_SUCCESS;
             result.reason[0] = '\0';
-            ESP_LOGI(TAG, "Order [%s] printed successfully", order.order_id);
+            ESP_LOGI(TAG, "Order [%s] printed successfully", order->order_id);
         } else {
             result.status = PRINT_STATUS_FAILED;
             strncpy(result.reason, reason, sizeof(result.reason) - 1);
             ESP_LOGE(TAG, "Order [%s] FAILED after %d attempts: %s",
-                     order.order_id, PRINT_MAX_RETRIES, reason);
+                     order->order_id, PRINT_MAX_RETRIES, reason);
         }
 
         /* Post result to the result queue (non-blocking, drop if full) */
         if (xQueueSend(params->result_queue, &result, pdMS_TO_TICKS(1000)) != pdTRUE) {
             ESP_LOGW(TAG, "Result queue full, dropping result for [%s]",
-                     order.order_id);
+                     order->order_id);
         }
+        
+        /* Small delay to prevent tight loop and yield execution */
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
+    
+    free(order);
 }
 
 /* ── Public API ─────────────────────────────────────────────────────── */
@@ -175,7 +189,7 @@ esp_err_t printer_task_start(QueueHandle_t order_queue,
     BaseType_t ret = xTaskCreate(
         printer_task,
         "printer_task",
-        4096,           /* Stack size (bytes) */
+        8192,           /* Stack size (bytes) increased to prevent overflow */
         &s_params,
         5,              /* Priority */
         NULL
