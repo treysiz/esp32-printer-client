@@ -28,11 +28,15 @@
 
 static const char *TAG = "WS_CLIENT";
 
+#define WS_CONNECTED_BIT BIT0
+#define WS_CLOSED_BIT    BIT1
+
 /* ── Internal state ─────────────────────────────────────────────────── */
 typedef struct {
     QueueHandle_t order_queue;
     QueueHandle_t result_queue;
     esp_websocket_client_handle_t client;
+    EventGroupHandle_t event_group;
     bool connected;
     int reconnect_delay_ms;
 
@@ -42,6 +46,17 @@ typedef struct {
 } ws_state_t;
 
 static ws_state_t s_ws = {0};
+
+static bool server_url_is_configured(const char *url)
+{
+    if (url == NULL || url[0] == '\0') {
+        return false;
+    }
+    if (strcmp(url, DEFAULT_SERVER_URL) == 0) {
+        return false;
+    }
+    return strncmp(url, "ws://", 5) == 0 || strncmp(url, "wss://", 6) == 0;
+}
 
 /* ── Deduplication helpers ──────────────────────────────────────────── */
 
@@ -250,12 +265,18 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "WebSocket CONNECTED");
         s_ws.connected = true;
         s_ws.reconnect_delay_ms = 1000; /* Reset backoff on success */
+        if (s_ws.event_group != NULL) {
+            xEventGroupSetBits(s_ws.event_group, WS_CONNECTED_BIT);
+        }
         send_register();
         break;
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket DISCONNECTED");
         s_ws.connected = false;
+        if (s_ws.event_group != NULL) {
+            xEventGroupSetBits(s_ws.event_group, WS_CLOSED_BIT);
+        }
         break;
 
     case WEBSOCKET_EVENT_DATA:
@@ -273,6 +294,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WebSocket ERROR");
         s_ws.connected = false;
+        if (s_ws.event_group != NULL) {
+            xEventGroupSetBits(s_ws.event_group, WS_CLOSED_BIT);
+        }
         break;
 
     default:
@@ -321,6 +345,14 @@ static void ws_client_task(void *arg)
         }
 
         ESP_LOGI(TAG, "WiFi ready, connecting WebSocket...");
+        if (!server_url_is_configured(cfg->server_url)) {
+            ESP_LOGE(TAG, "Server URL is not configured: %s", cfg->server_url);
+            vTaskDelay(pdMS_TO_TICKS(30000));
+            continue;
+        }
+
+        xEventGroupClearBits(state->event_group, WS_CONNECTED_BIT | WS_CLOSED_BIT);
+        state->connected = false;
 
         /* Configure WebSocket client */
         esp_websocket_client_config_t ws_cfg = {
@@ -361,9 +393,37 @@ static void ws_client_task(void *arg)
         }
 
         /* Stay connected — monitor for disconnect */
-        while (esp_websocket_client_is_connected(state->client)) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        EventBits_t bits = xEventGroupWaitBits(
+            state->event_group,
+            WS_CONNECTED_BIT | WS_CLOSED_BIT,
+            pdFALSE,
+            pdFALSE,
+            pdMS_TO_TICKS(15000)
+        );
+
+        if ((bits & WS_CONNECTED_BIT) == 0) {
+            if ((bits & WS_CLOSED_BIT) == 0) {
+                ESP_LOGW(TAG, "WebSocket connect timed out");
+            }
+            esp_websocket_client_stop(state->client);
+            esp_websocket_client_destroy(state->client);
+            state->client = NULL;
+
+            vTaskDelay(pdMS_TO_TICKS(state->reconnect_delay_ms));
+
+            /* Exponential backoff: 1s -> 2s -> 4s -> ... -> 30s max */
+            state->reconnect_delay_ms *= 2;
+            if (state->reconnect_delay_ms > 30000) {
+                state->reconnect_delay_ms = 30000;
+            }
+            continue;
         }
+
+        xEventGroupWaitBits(state->event_group,
+                            WS_CLOSED_BIT,
+                            pdFALSE,
+                            pdTRUE,
+                            portMAX_DELAY);
 
         /* Disconnected — clean up and reconnect */
         ESP_LOGW(TAG, "WebSocket lost, reconnecting in %d ms...",
@@ -398,6 +458,11 @@ esp_err_t websocket_client_task_start(QueueHandle_t order_queue,
     s_ws.result_queue = result_queue;
     s_ws.connected    = false;
     s_ws.client       = NULL;
+    s_ws.event_group  = xEventGroupCreate();
+    if (s_ws.event_group == NULL) {
+        ESP_LOGE(TAG, "Failed to create WebSocket event group");
+        return ESP_ERR_NO_MEM;
+    }
 
     /* Create the main WebSocket task */
     BaseType_t ret = xTaskCreate(

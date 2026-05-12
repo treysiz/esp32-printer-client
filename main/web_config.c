@@ -26,6 +26,8 @@
 static const char *TAG = "WEB_CFG";
 static web_config_mode_t s_mode;
 static QueueHandle_t s_order_queue = NULL;
+static bool s_printer_checked = false;
+static bool s_printer_reachable = false;
 
 /* ── HTML Content ───────────────────────────────────────────────────── */
 static const char *html_page = 
@@ -60,6 +62,10 @@ static const char *html_page =
 ".test-row { display: flex; gap: 10px; margin-top: 15px; }"
 ".test-row .btn { margin-top: 0; font-size: 14px; padding: 10px; }"
 ".info-row { display: flex; justify-content: space-between; font-size: 13px; color: #666; margin-bottom: 5px; border-bottom: 1px dashed #eee; padding-bottom: 5px; }"
+".ssid-row { display:flex; gap:8px; align-items:stretch; }"
+".ssid-row select { flex:1; min-width:0; padding:12px; border:1px solid #ddd; border-radius:6px; font-size:16px; background:#fafafa; }"
+".scan-btn { flex:0 0 92px; padding:0 10px; border:1px solid #ccc; border-radius:6px; background:#fff; color:#333; font-size:15px; font-weight:700; cursor:pointer; white-space:nowrap; }"
+".scan-btn:disabled { opacity:.75; cursor:wait; background:#eee; }"
 "</style></head><body>"
 "<div class='card'>"
 "  <div class='lang-switch'><span onclick='setLang(\"zh\")'>中文</span> | <span onclick='setLang(\"en\")'>EN</span></div>"
@@ -68,7 +74,7 @@ static const char *html_page =
 "    <div class='st-box'><div id='t_st_wifi'>WiFi状态</div><div class='st-val' id='v_wifi'>-</div></div>"
 "    <div class='st-box'><div id='t_st_cloud'>云端状态</div><div class='st-val' id='v_cloud'>-</div></div>"
 "    <div class='st-box'><div id='t_st_printer'>打印机连通</div><div class='st-val' id='v_printer_st'>-</div></div>"
-"    <div class='st-box'><div id='t_st_ip'>设备局域网 IP</div><div class='st-val c-blue' id='v_ip'>-</div></div>"
+"    <div class='st-box'><div id='t_st_ip'>局域网 IP</div><div class='st-val c-blue' id='v_ip'>-</div></div>"
 "  </div>"
 "  <div class='test-row'>"
 "    <button class='btn btn-gray' id='t_btn_test_net' onclick='testNet()'>测网络</button>"
@@ -86,9 +92,9 @@ static const char *html_page =
 "  <div class='step'>"
 "    <h4 id='t_step1'>第一步：连接店内 WiFi</h4>"
 "    <div class='group'><label id='t_ssid'>WiFi 名称</label>"
-"      <div style='display:flex;gap:8px'>"
-"        <select id='wifi_ssid' style='flex:1;padding:12px;border:1px solid #ddd;border-radius:6px;font-size:16px;background:#fafafa'></select>"
-"        <button onclick='scanWifi()' style='padding:12px 16px;border:1px solid #ddd;border-radius:6px;background:#f0f0f0;cursor:pointer;white-space:nowrap' id='t_btn_scan'>扫描</button>"
+"      <div class='ssid-row'>"
+"        <select id='wifi_ssid'></select>"
+"        <button type='button' onclick='scanWifi()' class='scan-btn' id='t_btn_scan'>扫描</button>"
 "      </div>"
 "      <input type='text' id='wifi_ssid_manual' placeholder='或手动输入SSID' style='margin-top:8px'>"
 "    </div>"
@@ -121,8 +127,8 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'云端状态', st_printer:'打印机连通', st_ip:'设备IP', btn_test_net:'测网络', btn_test_print:'测打印', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接云服务器', sid:'店铺编号', did:'设备编号', surl:'云服务器地址', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Cloud Status', st_printer:'Printer Link', st_ip:'Device IP', btn_test_net:'Test Net', btn_test_print:'Test Print', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Cloud', sid:'Store ID', did:'Device ID', surl:'Server URL', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'云端状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接云服务器', sid:'店铺编号', did:'设备编号', surl:'云服务器地址', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Cloud Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Cloud', sid:'Store ID', did:'Device ID', surl:'Server URL', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
 "function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
@@ -135,7 +141,7 @@ static const char *html_page =
 "  const elCloud = document.getElementById('v_cloud');"
 "  if(d.ws_connected){ elCloud.innerText = lang==='zh'?'在线':'Online'; elCloud.className='st-val c-green'; } else { elCloud.innerText = lang==='zh'?'离线':'Offline'; elCloud.className='st-val c-red'; }"
 "  const elPrt = document.getElementById('v_printer_st');"
-"  if(d.printer_reachable){ elPrt.innerText = lang==='zh'?'正常':'OK'; elPrt.className='st-val c-green'; } else { elPrt.innerText = lang==='zh'?'异常':'Failed'; elPrt.className='st-val c-red'; }"
+"  if(!d.printer_checked){ elPrt.innerText = '-'; elPrt.className='st-val'; } else if(d.printer_reachable){ elPrt.innerText = lang==='zh'?'正常':'OK'; elPrt.className='st-val c-green'; } else { elPrt.innerText = lang==='zh'?'异常':'Failed'; elPrt.className='st-val c-red'; }"
 "  document.getElementById('v_ip').innerText = d.ip || '-';"
 "  document.getElementById('v_mac').innerText = d.mac || '-';"
 "  document.getElementById('v_ver').innerText = d.fw || '-';"
@@ -161,6 +167,7 @@ static const char *html_page =
 "function toggleAdv() { document.getElementById('adv-box').classList.toggle('hidden'); }"
 "function toggleStatic() { document.getElementById('static-fields').classList.toggle('hidden', !document.getElementById('use_static_ip').checked); }"
 "function saveConfig() {"
+"  stopPolling();"
 "  const p = {"
 "    wifi_ssid: getSelectedSSID(),"
 "    wifi_pass: document.getElementById('wifi_pass').value,"
@@ -193,14 +200,18 @@ static const char *html_page =
 "  });"
 "}"
 "function clearConfig() { if(confirm(dict[lang].msg_reset)) { fetch('/api/clear', { method:'POST' }).then(()=> { alert(dict[lang].msg_reset_ok); setTimeout(()=>location.reload(), 3000); }); } }"
+"let scanningWifi=false;"
 "async function scanWifi() {"
-"  const btn=document.getElementById('t_btn_scan'); btn.disabled=true; btn.innerText='...';"
+"  if(scanningWifi) return;"
+"  scanningWifi=true;"
+"  const btn=document.getElementById('t_btn_scan'); btn.disabled=true; btn.innerText=lang==='zh'?'扫描中':'Scanning';"
 "  try {"
 "    const r=await fetch('/wifi_scan'); const d=await r.json();"
 "    const sel=document.getElementById('wifi_ssid');"
 "    sel.innerHTML='<option value=\"\">'+(lang==='zh'?'选择WiFi':'Select WiFi')+'</option>';"
 "    d.forEach(ap=>{ const o=document.createElement('option'); o.value=ap.ssid; o.text=ap.ssid+' ('+ap.rssi+'dBm)'; sel.appendChild(o); });"
-"  } catch(e){ console.error(e); }"
+"  } catch(e){ console.error(e); alert(lang==='zh'?'扫描失败，请稍后重试':'Scan failed, please retry'); }"
+"  scanningWifi=false;"
 "  btn.disabled=false; btn.innerText=lang==='zh'?'扫描':'Scan';"
 "}"
 "function getSelectedSSID() {"
@@ -214,7 +225,11 @@ static const char *html_page =
 "    else box.innerHTML='<span style=\"color:orange\">'+(lang==='zh'?'未连接WiFi':'WiFi Disconnected')+'</span>';"
 "  }).catch(()=>{});"
 "}"
-"window.onload = function() { setLang('zh'); loadData(); scanWifi(); updateWifiStatus(); setInterval(()=>fetch('/api/status').then(r=>r.json()).then(d=>{currentStatus=d;renderStatus();}), 5000); setInterval(updateWifiStatus, 5000); };"
+"let pollStatus=null,pollWifi=null;"
+"function stopPolling(){ if(pollStatus) clearInterval(pollStatus); if(pollWifi) clearInterval(pollWifi); }"
+"function refreshStatus(){ fetch('/api/status').then(r=>r.json()).then(d=>{currentStatus=d;renderStatus();}).catch(()=>{}); }"
+"function initWifiSelect(){ document.getElementById('wifi_ssid').innerHTML='<option value=\"\">'+(lang==='zh'?'点击扫描获取 WiFi':'Tap Scan for WiFi')+'</option>'; }"
+"window.onload = function() { setLang('zh'); initWifiSelect(); loadData(); updateWifiStatus(); pollStatus=setInterval(refreshStatus, 10000); pollWifi=setInterval(updateWifiStatus, 15000); };"
 "</script></body></html>";
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
@@ -283,7 +298,8 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "mode", s_mode == WEB_CONFIG_MODE_AP ? "ap" : "sta");
     cJSON_AddBoolToObject(root, "wifi_connected", wifi_mgr_is_connected());
     cJSON_AddBoolToObject(root, "ws_connected", websocket_client_is_connected());
-    cJSON_AddBoolToObject(root, "printer_reachable", printer_test_connection(cfg->printer_ip, cfg->printer_port));
+    cJSON_AddBoolToObject(root, "printer_checked", s_printer_checked);
+    cJSON_AddBoolToObject(root, "printer_reachable", s_printer_reachable);
 
     /* Get IP */
     char ip_str[16] = "";
@@ -446,9 +462,13 @@ static esp_err_t post_test_print_handler(httpd_req_t *req)
 {
     const device_config_t *cfg = config_get();
     if (!printer_test_connection(cfg->printer_ip, cfg->printer_port)) {
+        s_printer_checked = true;
+        s_printer_reachable = false;
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Printer unreachable");
         return ESP_OK;
     }
+    s_printer_checked = true;
+    s_printer_reachable = true;
 
     if (s_order_queue) {
         print_order_t order;
@@ -494,6 +514,10 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 20;
+    config.max_open_sockets = 7;
+    config.lru_purge_enable = true;
+    config.recv_wait_timeout = 5;
+    config.send_wait_timeout = 5;
     httpd_handle_t server = NULL;
 
     ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);
