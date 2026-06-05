@@ -18,16 +18,19 @@ extern "C" {
 #endif
 
 /* ── Firmware Version ───────────────────────────────────────────────── */
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "2.0.0"   /* 2.0.0 = HTTP "WiFi 拉单" pull mode */
 
 /* ── Compile-time Defaults (used when NVS is empty) ─────────────────── */
 #define DEFAULT_WIFI_SSID       "YourWiFi"
 #define DEFAULT_WIFI_PASS       "YourPassword"
-#define DEFAULT_STORE_ID        "store_001"
-#define DEFAULT_DEVICE_ID       "printer_001"
+#define DEFAULT_STORE_ID        ""          /* legacy, no longer required */
+#define DEFAULT_DEVICE_ID       ""          /* legacy, no longer required */
 #define DEFAULT_PRINTER_IP      "192.168.1.100"
 #define DEFAULT_PRINTER_PORT    9100
-#define DEFAULT_SERVER_URL      "ws://your-server.com:3001/printer"
+/* Backend "WiFi 拉单" base URL. Endpoints live under <base>/printer-api/*.
+ * Use http://<server>:3000 in dev, https://<domain> in production. */
+#define DEFAULT_SERVER_URL      "http://your-server.com:3000"
+#define DEFAULT_API_TOKEN       ""          /* Bearer token from admin UI */
 
 /* Static IP defaults (disabled by default) */
 #define DEFAULT_USE_STATIC_IP   false
@@ -43,6 +46,7 @@ extern "C" {
 #define MAX_DEVICE_ID_LEN   32
 #define MAX_IP_LEN          16
 #define MAX_URL_LEN         128
+#define MAX_TOKEN_LEN       128   /* Bearer API token */
 
 /* ── Configuration Structure ────────────────────────────────────────── */
 typedef struct {
@@ -50,7 +54,7 @@ typedef struct {
     char wifi_ssid[MAX_SSID_LEN + 1];
     char wifi_pass[MAX_PASS_LEN + 1];
 
-    /* Device identity */
+    /* Device identity (legacy/optional — backend identifies printer by token) */
     char store_id[MAX_STORE_ID_LEN + 1];
     char device_id[MAX_DEVICE_ID_LEN + 1];
 
@@ -58,8 +62,9 @@ typedef struct {
     char printer_ip[MAX_IP_LEN + 1];
     uint16_t printer_port;
 
-    /* Server */
-    char server_url[MAX_URL_LEN + 1];
+    /* Backend ("WiFi 拉单") */
+    char server_url[MAX_URL_LEN + 1];   /* base URL, e.g. http://host:3000 */
+    char api_token[MAX_TOKEN_LEN + 1];  /* Bearer token */
 
     /* Static IP (optional) */
     bool use_static_ip;

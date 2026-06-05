@@ -90,6 +90,7 @@ esp_err_t config_load(device_config_t *cfg)
         strncpy(cfg->printer_ip, DEFAULT_PRINTER_IP,  MAX_IP_LEN);
         cfg->printer_port = DEFAULT_PRINTER_PORT;
         strncpy(cfg->server_url, DEFAULT_SERVER_URL,  MAX_URL_LEN);
+        strncpy(cfg->api_token,  DEFAULT_API_TOKEN,   MAX_TOKEN_LEN);
 
         cfg->use_static_ip = DEFAULT_USE_STATIC_IP;
         strncpy(cfg->static_ip,  DEFAULT_STATIC_IP,   MAX_IP_LEN);
@@ -112,6 +113,7 @@ esp_err_t config_load(device_config_t *cfg)
     nvs_read_str(h, "printer_ip", cfg->printer_ip,  sizeof(cfg->printer_ip), DEFAULT_PRINTER_IP);
     nvs_read_u16(h, "printer_pt", &cfg->printer_port, DEFAULT_PRINTER_PORT);
     nvs_read_str(h, "server_url", cfg->server_url,  sizeof(cfg->server_url), DEFAULT_SERVER_URL);
+    nvs_read_str(h, "api_token",  cfg->api_token,   sizeof(cfg->api_token),  DEFAULT_API_TOKEN);
 
     nvs_read_bool(h, "use_sip",   &cfg->use_static_ip, DEFAULT_USE_STATIC_IP);
     nvs_read_str(h, "static_ip",  cfg->static_ip,   sizeof(cfg->static_ip),  DEFAULT_STATIC_IP);
@@ -151,6 +153,7 @@ esp_err_t config_save(const device_config_t *cfg)
     nvs_set_str(h, "printer_ip", cfg->printer_ip);
     nvs_set_u16(h, "printer_pt", cfg->printer_port);
     nvs_set_str(h, "server_url", cfg->server_url);
+    nvs_set_str(h, "api_token",  cfg->api_token);
 
     nvs_set_u8(h,  "use_sip",    cfg->use_static_ip ? 1 : 0);
     nvs_set_str(h, "static_ip",  cfg->static_ip);

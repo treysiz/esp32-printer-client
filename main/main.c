@@ -10,7 +10,7 @@
 #include "wifi_manager.h"
 #include "wifi_http.h"
 #include "wifi_portal.h"
-#include "websocket_client.h"
+#include "http_client.h"
 #include "printer.h"
 #include "web_config.h"
 
@@ -125,8 +125,10 @@ void app_main(void)
         /* ── Step 4: Create queues ──────────────────────────────────────── */
         ESP_LOGI(TAG, "[4/5] Creating message queues...");
 
+        /* The order queue carries POINTERS to heap-allocated orders, so the
+         * payload (large binary ESC/POS data) never gets copied by value. */
         QueueHandle_t order_queue = xQueueCreate(ORDER_QUEUE_DEPTH,
-                                                  sizeof(print_order_t));
+                                                  sizeof(print_order_t *));
         if (order_queue == NULL) {
             ESP_LOGE(TAG, "FATAL: Failed to create order queue");
             esp_restart();
@@ -145,7 +147,14 @@ void app_main(void)
         ESP_ERROR_CHECK(printer_task_start(order_queue, result_queue));
 
         if (wifi_mgr_is_connected()) {
-            ESP_ERROR_CHECK(websocket_client_task_start(order_queue, result_queue));
+            /* Non-fatal: if the client can't start (e.g. out of RAM for the
+             * response buffer), keep the web config UI alive so the user can
+             * still reconfigure rather than crash-looping. */
+            esp_err_t hc_err = http_client_task_start(order_queue, result_queue);
+            if (hc_err != ESP_OK) {
+                ESP_LOGE(TAG, "HTTP client failed to start: %s",
+                         esp_err_to_name(hc_err));
+            }
         }
 
         ESP_ERROR_CHECK(web_config_server_start(
@@ -157,7 +166,7 @@ void app_main(void)
         ESP_LOGI(TAG, "========================================");
     }
 
-    /* ── Main task: periodic health log ─────────────────────────────── */
+    /* Main task: periodic health log */
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(60000));
 

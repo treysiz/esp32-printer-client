@@ -20,9 +20,25 @@ CONFIG_LWIP_UDP_RECVMBOX_SIZE=6
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=32
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=3072
 
-# ── WebSocket client ─────────────────────────────────────────────────────
-CONFIG_WEBSOCKET_BUFFER_SIZE=4096
-CONFIG_ESP_WEBSOCKET_CLIENT_BUFFER_SIZE=4096
+# ── HTTPS / TLS (backend "WiFi 拉单") ────────────────────────────────────
+# Bundle of common root CAs so https:// backend URLs validate out of the box.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+CONFIG_ESP_TLS_INSECURE=n
+
+# ── SPI RAM (PSRAM) — OPTIONAL ───────────────────────────────────────────
+# The code (big_malloc) automatically uses PSRAM for the HTTP response +
+# decoded receipt buffers when present, and falls back to internal RAM
+# otherwise. The 48 KB default buffer fits internal RAM on the ESP32-S3, so
+# PSRAM is only needed for very large 80mm receipts. If your module HAS PSRAM,
+# enable it below — but pick the MODE that matches your module (QUAD vs OCT),
+# as a wrong mode can stop the board from booting:
+#   CONFIG_SPIRAM=y
+#   CONFIG_SPIRAM_USE_MALLOC=y
+#   # then EITHER (most N8R8/N16R8 octal modules):
+#   #   CONFIG_SPIRAM_MODE_OCT=y
+#   # OR (quad-PSRAM modules):
+#   #   CONFIG_SPIRAM_MODE_QUAD=y
 
 # ── NVS ─────────────────────────────────────────────────────────────────
 CONFIG_NVS_ENCRYPTION=n
@@ -31,15 +47,4 @@ CONFIG_NVS_ENCRYPTION=n
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
-# ── Logging ──────────────────────────────────────────────────────────────
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_LOG_DEFAULT_LEVEL=3
-
-# ── Heap / Memory ────────────────────────────────────────────────────────
-CONFIG_ESP_SYSTEM_CHECK_INT_LEVEL_5=y
-
-# ── Partition table ──────────────────────────────────────────────────────
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
-
-# ── ESP-NETIF ────────────────────────────────────────────────────────────
-CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=120
+# ── Logging ────────────────────────

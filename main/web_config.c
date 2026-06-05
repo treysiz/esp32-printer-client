@@ -18,7 +18,7 @@
 #include "esp_timer.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
-#include "websocket_client.h"
+#include "http_client.h"
 #include "cJSON.h"
 
 #include <string.h>
@@ -107,10 +107,9 @@ static const char *html_page =
 "    <div class='group'><label id='t_pport'>打印机端口 (默认9100)</label><input type='number' id='printer_port'></div>"
 "  </div>"
 "  <div class='step'>"
-"    <h4 id='t_step3'>第三步：连接云服务器</h4>"
-"    <div class='group'><label id='t_sid'>店铺编号 (Store ID)</label><input type='text' id='store_id'></div>"
-"    <div class='group'><label id='t_did'>设备编号 (Device ID)</label><input type='text' id='device_id'></div>"
-"    <div class='group'><label id='t_surl'>服务器地址</label><input type='text' id='server_url'></div>"
+"    <h4 id='t_step3'>第三步：连接后台 (WiFi 拉单)</h4>"
+"    <div class='group'><label id='t_surl'>后台地址</label><input type='text' id='server_url' placeholder='http://192.168.1.50:3000'></div>"
+"    <div class='group'><label id='t_tok'>API Token</label><input type='text' id='api_token' placeholder='后台新增 WiFi 打印机时生成'></div>"
 "  </div>"
 "  <div class='adv-toggle' id='t_adv_toggle' onclick='toggleAdv()'>展开高级设置 (固定IP)</div>"
 "  <div id='adv-box' class='hidden'>"
@@ -127,8 +126,8 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'云端状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接云服务器', sid:'店铺编号', did:'设备编号', surl:'云服务器地址', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Cloud Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Cloud', sid:'Store ID', did:'Device ID', surl:'Server URL', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
 "function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
@@ -151,9 +150,8 @@ static const char *html_page =
 "  fetch('/api/status').then(r=>r.json()).then(d => {"
 "    currentStatus = d; renderStatus();"
 "    document.getElementById('wifi_ssid_manual').value = d.cfg.wifi_ssid || '';"
-"    document.getElementById('store_id').value = d.cfg.store_id || '';"
-"    document.getElementById('device_id').value = d.cfg.device_id || '';"
 "    document.getElementById('server_url').value = d.cfg.server_url || '';"
+"    document.getElementById('api_token').value = d.cfg.api_token || '';"
 "    document.getElementById('printer_ip').value = d.cfg.printer_ip || '';"
 "    document.getElementById('printer_port').value = d.cfg.printer_port || '';"
 "    document.getElementById('use_static_ip').checked = d.cfg.use_static_ip;"
@@ -171,9 +169,8 @@ static const char *html_page =
 "  const p = {"
 "    wifi_ssid: getSelectedSSID(),"
 "    wifi_pass: document.getElementById('wifi_pass').value,"
-"    store_id: document.getElementById('store_id').value,"
-"    device_id: document.getElementById('device_id').value,"
 "    server_url: document.getElementById('server_url').value,"
+"    api_token: document.getElementById('api_token').value,"
 "    printer_ip: document.getElementById('printer_ip').value,"
 "    printer_port: parseInt(document.getElementById('printer_port').value),"
 "    use_static_ip: document.getElementById('use_static_ip').checked,"
@@ -297,7 +294,8 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     
     cJSON_AddStringToObject(root, "mode", s_mode == WEB_CONFIG_MODE_AP ? "ap" : "sta");
     cJSON_AddBoolToObject(root, "wifi_connected", wifi_mgr_is_connected());
-    cJSON_AddBoolToObject(root, "ws_connected", websocket_client_is_connected());
+    /* "ws_connected" key kept for UI compatibility; now means backend online. */
+    cJSON_AddBoolToObject(root, "ws_connected", http_client_is_connected());
     cJSON_AddBoolToObject(root, "printer_checked", s_printer_checked);
     cJSON_AddBoolToObject(root, "printer_reachable", s_printer_reachable);
 
@@ -327,9 +325,9 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(cfg_obj, "wifi_ssid", cfg->wifi_ssid);
     /* Mask the password if it's set */
     cJSON_AddStringToObject(cfg_obj, "wifi_pass", strlen(cfg->wifi_pass) > 0 ? "********" : "");
-    cJSON_AddStringToObject(cfg_obj, "store_id", cfg->store_id);
-    cJSON_AddStringToObject(cfg_obj, "device_id", cfg->device_id);
     cJSON_AddStringToObject(cfg_obj, "server_url", cfg->server_url);
+    /* Mask the token; UI submits "********" to keep the stored one unchanged. */
+    cJSON_AddStringToObject(cfg_obj, "api_token", strlen(cfg->api_token) > 0 ? "********" : "");
     cJSON_AddStringToObject(cfg_obj, "printer_ip", cfg->printer_ip);
     cJSON_AddNumberToObject(cfg_obj, "printer_port", cfg->printer_port);
     cJSON_AddBoolToObject(cfg_obj, "use_static_ip", cfg->use_static_ip);
@@ -396,15 +394,19 @@ static esp_err_t post_save_handler(httpd_req_t *req)
         }
     }
         
-    if ((item = cJSON_GetObjectItem(root, "store_id")) && cJSON_IsString(item)) 
-        strncpy(new_cfg.store_id, item->valuestring, sizeof(new_cfg.store_id) - 1);
-        
-    if ((item = cJSON_GetObjectItem(root, "device_id")) && cJSON_IsString(item)) 
-        strncpy(new_cfg.device_id, item->valuestring, sizeof(new_cfg.device_id) - 1);
-        
-    if ((item = cJSON_GetObjectItem(root, "server_url")) && cJSON_IsString(item)) 
+    if ((item = cJSON_GetObjectItem(root, "server_url")) && cJSON_IsString(item))
         strncpy(new_cfg.server_url, item->valuestring, sizeof(new_cfg.server_url) - 1);
-        
+
+    /* Only overwrite the token if a new one is supplied (not the ******** mask). */
+    if ((item = cJSON_GetObjectItem(root, "api_token")) && cJSON_IsString(item)) {
+        if (strlen(item->valuestring) > 0 && strcmp(item->valuestring, "********") != 0) {
+            strncpy(new_cfg.api_token, item->valuestring, sizeof(new_cfg.api_token) - 1);
+        } else {
+            const device_config_t *old_cfg = config_get();
+            strncpy(new_cfg.api_token, old_cfg->api_token, sizeof(new_cfg.api_token) - 1);
+        }
+    }
+
     if ((item = cJSON_GetObjectItem(root, "printer_ip")) && cJSON_IsString(item)) 
         strncpy(new_cfg.printer_ip, item->valuestring, sizeof(new_cfg.printer_ip) - 1);
         
@@ -428,13 +430,13 @@ static esp_err_t post_save_handler(httpd_req_t *req)
 
     cJSON_Delete(root);
 
-    /* Validate missing fields */
+    /* Validate missing fields (store/device IDs are no longer required —
+     * the backend identifies the printer by its API token). */
     const char* missing = NULL;
     if (strlen(new_cfg.wifi_ssid) == 0) missing = "WiFi SSID";
     else if (strlen(new_cfg.server_url) == 0) missing = "Server URL";
     else if (strlen(new_cfg.printer_ip) == 0) missing = "Printer IP";
-    else if (strlen(new_cfg.store_id) == 0) missing = "Store ID";
-    else if (strlen(new_cfg.device_id) == 0) missing = "Device ID";
+    else if (strlen(new_cfg.api_token) == 0) missing = "API Token";
 
     if (missing) {
         char err_json[128];
@@ -471,13 +473,27 @@ static esp_err_t post_test_print_handler(httpd_req_t *req)
     s_printer_reachable = true;
 
     if (s_order_queue) {
-        print_order_t order;
-        memset(&order, 0, sizeof(order));
-        strncpy(order.order_id, "TEST-0001", sizeof(order.order_id) - 1);
-        strncpy(order.content, "\n\n*** TEST PRINT ***\nPrinter connection is successful!\n\n\n\n", sizeof(order.content) - 1);
-        
-        xQueueSend(s_order_queue, &order, pdMS_TO_TICKS(500));
-        httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+        /* Plain ESC/POS text is fine for a self-test (no Chinese, no raster).
+         * Build a binary-safe pointer order like the HTTP client does. */
+        static const char test_text[] =
+            "\x1b\x40"                /* ESC @  : init printer */
+            "\n\n*** TEST PRINT ***\nPrinter connection is successful!\n\n\n\n"
+            "\x1d\x56\x00";           /* GS V 0 : full cut */
+        size_t len = sizeof(test_text) - 1;
+
+        print_order_t *order = print_order_alloc("TEST-0001", len, 1);
+        if (!order) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+            return ESP_OK;
+        }
+        memcpy(order->content, test_text, len);
+
+        if (xQueueSend(s_order_queue, &order, pdMS_TO_TICKS(500)) == pdTRUE) {
+            httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+        } else {
+            print_order_free(order);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Queue full");
+        }
     } else {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No queue");
     }

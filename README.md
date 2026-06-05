@@ -2,140 +2,176 @@
 
 [English](#english) | [中文](#chinese)
 
+> **v2.0.0 — "WiFi 拉单" (WiFi pull) HTTP mode.** This firmware no longer uses
+> WebSocket push. It adapts to the backend's HTTP pull-order channel:
+> Bearer-authenticated polling, raw ESC/POS raster payloads (Chinese prints
+> correctly), and `done`/`failed` job reporting. No backend changes required.
+
 ---
 
 <h2 id="english">🇬🇧 English</h2>
 
-This is a robust ESP32-S3 client application that connects to a cloud WebSocket server to receive print orders, and forwards them to a local thermal printer via TCP port 9100. It is designed to be highly reliable in commercial environments (like restaurants).
+An ESP32-S3 client that **polls** a backend over HTTP(S), pulls pending print
+jobs for its printer, and streams the raw ESC/POS bytes to a local thermal
+printer on TCP port 9100.
 
-### Features
-- **Smart Web Config UI**: An embedded, mobile-friendly configuration portal. Boot into AP mode (`PrinterBox_Setup`) if WiFi is unavailable, allowing users to set up WiFi, Printer, and Server properties easily.
-- **WiFi & Network**: Supports DHCP (default) and Static IP, with robust auto-reconnect and a 5-second automatic fallback to AP mode if the connection drops or fails.
-- **WebSocket**: Maintains a persistent connection to the cloud server, handles registration, responds to ping/pong heartbeats, and automatically reconnects with an exponential backoff mechanism upon disconnection.
-- **Print Forwarding**: Listens for incoming JSON orders, deduplicates them (remembers the last 20 orders), and places them in a FreeRTOS queue. A dedicated task sends the order to a local printer on port 9100.
-- **Real-time Diagnostics**: Performs real TCP pings and health checks before printing or showing status, ensuring no "fake success" messages.
-- **NVS Configuration**: All core parameters are loaded from NVS. If NVS is empty, it falls back to compile-time defaults. Long pressing the BOOT button for 5 seconds factory resets the device.
+### How it works (main loop)
+- **Heartbeat** — `POST <base>/printer-api/heartbeat` every **30 s** (keeps the
+  printer "Online" in the admin UI).
+- **Pull jobs** — `GET <base>/printer-api/jobs` every **~4 s**. Each job's
+  `content` is decoded to exact bytes and queued for printing `copies` times.
+- **Report** — `POST .../jobs/<id>/done` on success, `.../jobs/<id>/failed` on
+  failure (printer offline, out of paper, etc.).
+- Every request carries `Authorization: Bearer <API_TOKEN>`.
+- Last-20-job de-duplication prevents reprinting a job still `pending` in a
+  poll that races with our report.
 
-### Hardware Requirements
-- ESP32-S3 Development Board
-- Local Network with a Thermal Receipt Printer (Port 9100)
+### The important bit: `content` decoding
+`content` is the whole receipt rendered to an image as ESC/POS **raster** bytes
+(`GS v 0`). The backend latin1-decodes those raw bytes into a JSON string; over
+the wire the JSON is UTF-8. The firmware recovers the **exact** original bytes
+by JSON-unescaping, UTF-8-decoding to code points, and taking `codepoint &
+0xFF`. This is why **Chinese menu names print correctly** — the text lives in
+the image, not in ESC/POS text mode. The payload routinely contains `0x00`
+bytes (white pixels), so it is binary end-to-end (explicit length, never
+`strlen`). See the decode section of `main/http_client.c`.
 
-### Configuration
-When the firmware is flashed for the first time (empty NVS), it automatically enters AP mode. You can connect to `PrinterBox_Setup` and browse to `http://192.168.4.1` to configure the device via a user-friendly UI. 
+### Hardware
+- ESP32-S3 board (**PSRAM strongly recommended** — see Memory below)
+- LAN thermal printer listening on port 9100
 
-Alternatively, you can edit `main/config.h` before building:
+### Configure
+First boot (empty NVS) starts AP mode: connect to `PrinterBox_Setup`
+(password `12345678`) and open `http://192.168.4.1`. Set WiFi, Printer IP/port,
+**Backend URL** (e.g. `http://192.168.1.50:3000`, or `https://<domain>` in
+production), and the **API Token** shown once when you add a *WiFi 拉单* printer
+in the admin UI.
+
+Compile-time defaults live in `main/config.h`:
 ```c
-#define DEFAULT_WIFI_SSID       "YourWiFi"
-#define DEFAULT_WIFI_PASS       "YourPassword"
-#define DEFAULT_STORE_ID        "store_001"
-#define DEFAULT_DEVICE_ID       "printer_001"
-#define DEFAULT_PRINTER_IP      "192.168.1.100"
-#define DEFAULT_PRINTER_PORT    9100
-#define DEFAULT_SERVER_URL      "ws://your-server.com:3001/printer"
+#define DEFAULT_WIFI_SSID    "YourWiFi"
+#define DEFAULT_WIFI_PASS    "YourPassword"
+#define DEFAULT_PRINTER_IP   "192.168.1.100"
+#define DEFAULT_PRINTER_PORT 9100
+#define DEFAULT_SERVER_URL   "http://your-server.com:3000"  // base URL, no path
+#define DEFAULT_API_TOKEN    ""                              // Bearer token
 ```
+Store ID / Device ID are no longer required — the backend identifies the
+printer by its API token.
 
 ### Build & Flash (ESP-IDF v5.x)
-1. Set up the ESP-IDF environment: `. $HOME/esp/esp-idf/export.sh`
-2. Set the target: `idf.py set-target esp32s3`
-3. Build the project: `idf.py build`
-4. Flash the firmware: `idf.py flash monitor`
+```
+. $HOME/esp/esp-idf/export.sh
+idf.py set-target esp32s3
+idf.py build
+idf.py flash monitor
+```
+HTTPS works out of the box via the bundled root-CA store
+(`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` in `sdkconfig.defaults`).
 
-### Cloud WebSocket API
-**1. Device Registration (ESP32 -> Server)**
-```json
-{
-  "type": "register",
-  "store_id": "store_001",
-  "device_id": "printer_001",
-  "firmware_version": "1.0.0"
-}
-```
+### Memory (why PSRAM)
+A receipt is mostly white pixels = `0x00`, and the backend encodes each `0x00`
+as a 6-byte JSON escape. A 12 KB raster therefore becomes ~70 KB of JSON, and
+`GET /jobs` returns **all** pending jobs at once. The response buffer
+(`HTTP_RESP_PREFERRED`, default 256 KB) is allocated from PSRAM when present and
+shrinks to fit internal RAM otherwise.
 
-**2. Print Order (Server -> ESP32)**
-```json
-{
-  "type": "print",
-  "order_id": "123456",
-  "content": "***************\n NEW ORDER\n***************\nChicken Fried Rice x1\nBeef Lo Mein x2\n"
-}
-```
+### Backend API contract (consumed by the firmware)
+| Method | Path | Body | Success |
+|---|---|---|---|
+| POST | `/printer-api/heartbeat` | none | `{"success":true,"printerId","name"}` |
+| GET  | `/printer-api/jobs` | none | `{"success":true,"data":[ {id,content,copies,...} ]}` |
+| POST | `/printer-api/jobs/:id/done` | none | `{"success":true}` |
+| POST | `/printer-api/jobs/:id/failed` | none | `{"success":true}` |
 
-**3. Print Result (ESP32 -> Server)**
-Success:
-```json
-{ "type": "print_result", "status": "success", "order_id": "123456" }
+Auth errors: `401` (missing/invalid token), `403` (token's printer is not
+`provider='wifi'`).
+
+### Local testing without the backend
+`test_server.py` is a mock backend implementing the same contract. With Pillow
+installed it renders a real Chinese raster receipt (`GS v 0`); otherwise it
+falls back to plain ESC/POS text.
 ```
-Failed:
-```json
-{ "type": "print_result", "status": "failed", "order_id": "123456", "reason": "connect_timeout" }
+python3 test_server.py --port 3000 --token testtoken
 ```
+Point the firmware at `http://<your-pc-ip>:3000` with token `testtoken`, then
+press Enter in the console to queue jobs.
 
 ---
 
 <h2 id="chinese">🇨🇳 中文</h2>
 
-这是一个高可用性的 ESP32-S3 打印机客户端应用。它通过 WebSocket 协议连接到云端服务器接收打印订单，然后通过 TCP 9100 端口将订单转发给局域网内的热敏打印机，专为餐馆等高要求商用环境设计。
+运行在 ESP32-S3 上的打印机客户端：通过 **HTTP(S) 轮询**后台，拉取本机待打印任务，
+再把原始 ESC/POS 字节通过 TCP 9100 端口发给局域网热敏打印机。**本版本已从
+WebSocket 推送改为后台“WiFi 拉单”HTTP 模式，无需改动后台任何代码。**
 
-### 核心功能
-- **智能网页配置 UI**：内置适合手机操作的网页后台。支持中英双语，提供傻瓜式的三步配网向导，支持一键测网络、测打印。
-- **WiFi 与网络容错**：支持 DHCP 和静态 IP。开机时如果 5 秒内无法连接到 WiFi，设备会自动降级并开启 `PrinterBox_Setup` 蓝牙热点供用户紧急修复网络。
-- **长连接与重连**：与云端服务器保持稳定的 WebSocket 连接，支持心跳检测，断线后通过指数退避算法自动重连。
-- **订单打印与去重**：采用 FreeRTOS 异步队列处理打印任务，自动记录并过滤最近 20 个重复订单，防止网络抖动导致的重复打印。具备最高 3 次失败重试机制。
-- **真实连通性拨测**：状态查询与一键测试功能均采用真实的 TCP 握手拨测，拒绝“假成功”，实时反馈打印机与服务器的物理连通状态。
-- **硬件防砖**：所有配置保存在 NVS。支持长按开发板的 BOOT 键 5 秒强制恢复出厂设置并进入配网模式。
+### 工作原理（主循环）
+- **心跳**：每 **30 秒** `POST <base>/printer-api/heartbeat`（后台显示 Online）。
+- **拉单**：每 **约 4 秒** `GET <base>/printer-api/jobs`，把每个任务的 `content`
+  还原为精确字节，按 `copies` 份数打印。
+- **回报**：成功 `POST .../jobs/<id>/done`，失败 `POST .../jobs/<id>/failed`。
+- 每个请求都带 `Authorization: Bearer <API_TOKEN>`。
+- 保留“最近 20 单去重”，避免在回报与轮询竞争时重复打印仍为 `pending` 的任务。
+
+### 关键点：content 的解码
+`content` 是后台把整张小票渲染成图片后生成的 ESC/POS **光栅**指令（`GS v 0`）。
+后台把原始字节用 latin1 解成字符串放进 JSON，传输时 JSON 为 UTF-8。固件通过
+“JSON 反转义 → UTF-8 解码成码点 → 取 码点 & 0xFF”还原出**完全一致**的原始字节。
+这就是**中文菜名能正常打印**的原因——文字在图片里，而非 ESC/POS 文本模式。光栅
+数据里大量是 `0x00`（白色像素），所以全程按二进制处理（显式长度，绝不用 strlen）。
+详见 `main/http_client.c` 的解码部分。
 
 ### 硬件需求
-- ESP32-S3 开发板
-- 支持局域网网口/WiFi 的热敏票据打印机（默认开放 9100 端口）
+- ESP32-S3 开发板（**强烈建议带 PSRAM**，见下方“内存说明”）
+- 局域网热敏打印机（开放 9100 端口）
 
 ### 如何配置
-全新烧录后，ESP32 会自动开启热点。
-用手机连接 WiFi：`PrinterBox_Setup`（密码：`12345678`），然后浏览器访问 `http://192.168.4.1` 即可进入图形化配置后台。
+全新烧录后进入热点模式：手机连接 `PrinterBox_Setup`（密码 `12345678`），浏览器
+打开 `http://192.168.4.1`，填写 WiFi、打印机 IP/端口、**后台地址**（如
+`http://192.168.1.50:3000`，生产用 `https://<域名>`）以及后台新增 *WiFi 拉单*
+打印机时弹出的一次性 **API Token**。
 
-如果您想直接将默认参数编译进固件，可修改 `main/config.h`：
+也可在 `main/config.h` 写入编译期默认值：
 ```c
-#define DEFAULT_WIFI_SSID       "您的WiFi"
-#define DEFAULT_WIFI_PASS       "WiFi密码"
-#define DEFAULT_STORE_ID        "store_001"
-#define DEFAULT_DEVICE_ID       "printer_001"
-#define DEFAULT_PRINTER_IP      "192.168.1.100"
-#define DEFAULT_PRINTER_PORT    9100
-#define DEFAULT_SERVER_URL      "ws://您的服务器地址:3001/printer"
+#define DEFAULT_WIFI_SSID    "您的WiFi"
+#define DEFAULT_WIFI_PASS    "WiFi密码"
+#define DEFAULT_PRINTER_IP   "192.168.1.100"
+#define DEFAULT_PRINTER_PORT 9100
+#define DEFAULT_SERVER_URL   "http://您的服务器地址:3000"  // 基础地址，不含路径
+#define DEFAULT_API_TOKEN    ""                            // Bearer Token
 ```
+店铺编号 / 设备编号已不再需要——后台通过 API Token 唯一定位打印机。
 
-### 编译与烧录 (基于 ESP-IDF v5.x)
-1. 激活环境：`. $HOME/esp/esp-idf/export.sh`
-2. 设置芯片：`idf.py set-target esp32s3`
-3. 编译：`idf.py build`
-4. 烧录并监控：`idf.py flash monitor`
+### 编译与烧录 (ESP-IDF v5.x)
+```
+. $HOME/esp/esp-idf/export.sh
+idf.py set-target esp32s3
+idf.py build
+idf.py flash monitor
+```
+HTTPS 开箱即用（`sdkconfig.defaults` 已开启 `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE`）。
 
-### 云端 WebSocket API 接口规范
-**1. 设备上线注册 (ESP32 -> 服务器)**
-建立连接后自动发送：
-```json
-{
-  "type": "register",
-  "store_id": "store_001",
-  "device_id": "printer_001",
-  "firmware_version": "1.0.0"
-}
-```
+### 内存说明（为什么要 PSRAM）
+小票大部分是白色像素 `0x00`，后台把每个 `0x00` 编码成 6 字节的 JSON 转义。所以
+12KB 的光栅会膨胀成约 70KB 的 JSON，而 `GET /jobs` 会一次性返回**所有**待打印任务。
+响应缓冲区（`HTTP_RESP_PREFERRED`，默认 256KB）优先从 PSRAM 分配，没有 PSRAM 时
+自动缩小以适配内部 RAM。
 
-**2. 下发打印订单 (服务器 -> ESP32)**
-```json
-{
-  "type": "print",
-  "order_id": "123456",
-  "content": "***************\n 新订单\n***************\n黄焖鸡米饭 x1\n手撕包菜 x1\n"
-}
-```
+### 后台 API 契约（固件调用）
+| 方法 | 路径 | 请求体 | 成功 |
+|---|---|---|---|
+| POST | `/printer-api/heartbeat` | 无 | `{"success":true,"printerId","name"}` |
+| GET  | `/printer-api/jobs` | 无 | `{"success":true,"data":[ {id,content,copies,...} ]}` |
+| POST | `/printer-api/jobs/:id/done` | 无 | `{"success":true}` |
+| POST | `/printer-api/jobs/:id/failed` | 无 | `{"success":true}` |
 
-**3. 回传打印结果 (ESP32 -> 服务器)**
-成功：
-```json
-{ "type": "print_result", "status": "success", "order_id": "123456" }
+鉴权错误：`401`（缺失/无效 Token），`403`（Token 对应打印机不是 `provider='wifi'`）。
+
+### 不依赖后台的本地测试
+`test_server.py` 是实现同一契约的模拟后台。装了 Pillow 会渲染真正的中文光栅小票
+（`GS v 0`），否则回退为纯 ESC/POS 文本。
 ```
-失败：
-```json
-{ "type": "print_result", "status": "failed", "order_id": "123456", "reason": "connect_timeout" }
+python3 test_server.py --port 3000 --token testtoken
 ```
+然后把固件的后台地址设为 `http://<你的电脑IP>:3000`、Token 设为 `testtoken`，
+在控制台按回车即可下发测试订单。
