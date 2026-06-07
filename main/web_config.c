@@ -99,6 +99,7 @@ static const char *html_page =
 "      <input type='text' id='wifi_ssid_manual' placeholder='或手动输入SSID' style='margin-top:8px'>"
 "    </div>"
 "    <div class='group'><label id='t_pass'>WiFi 密码</label><input type='text' id='wifi_pass' placeholder='********'></div>"
+"    <button type='button' class='btn btn-gray' id='t_btn_wifitry' onclick='tryWifi()' style='margin-top:8px'>测试连接</button>"
 "    <div id='wifi_st_box' style='background:#f0f7ff;padding:10px;border-radius:6px;margin-top:8px;font-size:13px'></div>"
 "  </div>"
 "  <div class='step'>"
@@ -110,6 +111,8 @@ static const char *html_page =
 "    <h4 id='t_step3'>第三步：连接后台 (WiFi 拉单)</h4>"
 "    <div class='group'><label id='t_surl'>后台地址</label><input type='text' id='server_url' placeholder='http://192.168.1.50:3000'></div>"
 "    <div class='group'><label id='t_tok'>API Token</label><input type='text' id='api_token' placeholder='后台新增 WiFi 打印机时生成'></div>"
+"    <button type='button' class='btn btn-gray' id='t_btn_bktry' onclick='tryBackend()' style='margin-top:8px'>测试后台连接</button>"
+"    <div id='backend_st_box' style='background:#f0f7ff;padding:10px;border-radius:6px;margin-top:8px;font-size:13px'></div>"
 "  </div>"
 "  <div class='adv-toggle' id='t_adv_toggle' onclick='toggleAdv()'>展开高级设置 (固定IP)</div>"
 "  <div id='adv-box' class='hidden'>"
@@ -126,8 +129,8 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
 "function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
@@ -212,8 +215,37 @@ static const char *html_page =
 "  btn.disabled=false; btn.innerText=lang==='zh'?'扫描':'Scan';"
 "}"
 "function getSelectedSSID() {"
-"  const m=document.getElementById('wifi_ssid_manual').value;"
-"  return m||document.getElementById('wifi_ssid').value;"
+"  const sel=document.getElementById('wifi_ssid').value;"
+"  const m=document.getElementById('wifi_ssid_manual').value.trim();"
+"  return sel||m;"
+"}"
+"async function tryWifi(){"
+"  const ssid=getSelectedSSID(); if(!ssid){ alert(lang==='zh'?'请先选择或输入 WiFi 名称':'Pick or enter a WiFi name first'); return; }"
+"  const pass=document.getElementById('wifi_pass').value;"
+"  const btn=document.getElementById('t_btn_wifitry'); const o=btn.innerText; btn.disabled=true; btn.innerText=lang==='zh'?'连接中...':'Connecting...';"
+"  const box=document.getElementById('wifi_st_box');"
+"  box.innerHTML=(lang==='zh'?'正在尝试连接 ':'Trying ')+ssid+' ...';"
+"  try{"
+"    const r=await fetch('/api/wifi_try',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:ssid,pass:pass})});"
+"    const d=await r.json();"
+"    if(d.ok){ box.innerHTML='<span style=\\'color:green\\'>\\u2713 '+(lang==='zh'?'连接成功，IP: ':'Connected, IP: ')+d.ip+(lang==='zh'?'（现在可以点保存）':' (you can Save now)')+'</span>'; }"
+"    else{ const m={ap_not_found:(lang==='zh'?'找不到该 WiFi（名称错/不在范围/可能是5G）':'AP not found'),wrong_password:(lang==='zh'?'密码错误或认证失败':'Wrong password'),timeout:(lang==='zh'?'连接超时':'Timeout'),empty_ssid:(lang==='zh'?'SSID 为空':'Empty SSID')}; box.innerHTML='<span style=\\'color:#dc3545\\'>\\u2717 '+(lang==='zh'?'连接失败: ':'Failed: ')+(m[d.error]||d.error||'?')+'</span>'; }"
+"  }catch(e){ box.innerHTML='<span style=\\'color:#dc3545\\'>'+(lang==='zh'?'请求失败，请重试':'Request failed')+'</span>'; }"
+"  btn.disabled=false; btn.innerText=o;"
+"}"
+"async function tryBackend(){"
+"  let url=document.getElementById('server_url').value.trim();"
+"  let tok=document.getElementById('api_token').value;"
+"  const btn=document.getElementById('t_btn_bktry'); const o=btn.innerText; btn.disabled=true; btn.innerText=lang==='zh'?'测试中...':'Testing...';"
+"  const box=document.getElementById('backend_st_box');"
+"  box.innerHTML=(lang==='zh'?'正在测试后台...':'Testing backend...');"
+"  try{"
+"    const r=await fetch('/api/backend_try',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,token:tok})});"
+"    const d=await r.json();"
+"    if(d.ok){ box.innerHTML='<span style=\\'color:green\\'>\\u2713 '+(lang==='zh'?'后台连接成功（在线）':'Backend OK (online)')+'</span>'; }"
+"    else{ const m={bad_token:(lang==='zh'?'Token 错误或未激活':'Invalid token'),not_wifi_provider:(lang==='zh'?'该打印机不是“WiFi 拉单”类型':'Printer is not WiFi-pull'),unreachable:(lang==='zh'?'连不上后台（检查地址/同网/防火墙/先连好WiFi）':'Unreachable'),bad_url:(lang==='zh'?'地址格式错（需 http:// 开头）':'Bad URL'),no_token:(lang==='zh'?'未填 Token':'No token')}; box.innerHTML='<span style=\\'color:#dc3545\\'>\\u2717 '+(lang==='zh'?'失败: ':'Failed: ')+(m[d.error]||d.error||('HTTP '+d.status))+'</span>'; }"
+"  }catch(e){ box.innerHTML='<span style=\\'color:#dc3545\\'>'+(lang==='zh'?'请求失败，请重试':'Request failed')+'</span>'; }"
+"  btn.disabled=false; btn.innerText=o;"
 "}"
 "function updateWifiStatus() {"
 "  fetch('/wifi_status').then(r=>r.json()).then(s=>{"
@@ -523,6 +555,108 @@ static esp_err_t post_clear_handler(httpd_req_t *req)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
+/* POST /api/wifi_try  {"ssid":"..","pass":".."}
+ *   -> {"ok":true,"ip":"x.x.x.x"} | {"ok":false,"error":"wrong_password"|...}
+ * Tries the given creds live (AP portal stays up); lets the user confirm a
+ * working connection BEFORE saving. Nothing is written to NVS here. */
+static esp_err_t post_wifi_try_handler(httpd_req_t *req)
+{
+    char buf[300];
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad length");
+        return ESP_OK;
+    }
+    int rec = 0, r;
+    while (rec < total) {
+        r = httpd_req_recv(req, buf + rec, total - rec);
+        if (r <= 0) { if (r == HTTPD_SOCK_ERR_TIMEOUT) continue; return ESP_FAIL; }
+        rec += r;
+    }
+    buf[rec] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_OK; }
+    char ssid[33] = {0}, pass[65] = {0};
+    cJSON *it;
+    if ((it = cJSON_GetObjectItem(root, "ssid")) && cJSON_IsString(it))
+        strncpy(ssid, it->valuestring, sizeof(ssid) - 1);
+    if ((it = cJSON_GetObjectItem(root, "pass")) && cJSON_IsString(it))
+        strncpy(pass, it->valuestring, sizeof(pass) - 1);
+    cJSON_Delete(root);
+
+    esp_netif_ip_info_t ip = {0};
+    char err[48] = {0};
+    esp_err_t e = wifi_mgr_try_connect(ssid, pass, 12000, &ip, err, sizeof(err));
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", e == ESP_OK);
+    if (e == ESP_OK) {
+        char ipstr[16] = {0};
+        esp_ip4addr_ntoa(&ip.ip, ipstr, sizeof(ipstr));
+        cJSON_AddStringToObject(resp, "ip", ipstr);
+    } else {
+        cJSON_AddStringToObject(resp, "error", err);
+    }
+    char *js = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, js ? js : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+    cJSON_Delete(resp);
+    if (js) free(js);
+    return ESP_OK;
+}
+
+/* POST /api/backend_try  {"url":"http://..","token":".."}
+ *   -> {"ok":true} | {"ok":false,"status":N,"error":"bad_token"|...}
+ * Tests the typed backend URL+token live (real heartbeat). Blank/masked values
+ * fall back to the saved config so "keep current" still works. No NVS write. */
+static esp_err_t post_backend_try_handler(httpd_req_t *req)
+{
+    char buf[400];
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad length");
+        return ESP_OK;
+    }
+    int rec = 0, r;
+    while (rec < total) {
+        r = httpd_req_recv(req, buf + rec, total - rec);
+        if (r <= 0) { if (r == HTTPD_SOCK_ERR_TIMEOUT) continue; return ESP_FAIL; }
+        rec += r;
+    }
+    buf[rec] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_OK; }
+    char url[MAX_URL_LEN + 1] = {0}, token[MAX_TOKEN_LEN + 1] = {0};
+    cJSON *it;
+    if ((it = cJSON_GetObjectItem(root, "url")) && cJSON_IsString(it))
+        strncpy(url, it->valuestring, sizeof(url) - 1);
+    if ((it = cJSON_GetObjectItem(root, "token")) && cJSON_IsString(it))
+        strncpy(token, it->valuestring, sizeof(token) - 1);
+    cJSON_Delete(root);
+
+    /* Fall back to saved values for blank / masked input. */
+    const device_config_t *cfg = config_get();
+    if (strlen(url) == 0)   strncpy(url, cfg->server_url, sizeof(url) - 1);
+    if (strlen(token) == 0 || strcmp(token, "********") == 0)
+        strncpy(token, cfg->api_token, sizeof(token) - 1);
+
+    char err[64] = {0};
+    int status = http_client_test_backend(url, token, err, sizeof(err));
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", status == 200);
+    cJSON_AddNumberToObject(resp, "status", status);
+    if (status != 200) cJSON_AddStringToObject(resp, "error", err);
+    char *js = cJSON_PrintUnformatted(resp);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, js ? js : "{\"ok\":false}", HTTPD_RESP_USE_STRLEN);
+    cJSON_Delete(resp);
+    if (js) free(js);
+    return ESP_OK;
+}
+
 esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_queue)
 {
     s_mode = mode;
@@ -578,6 +712,22 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &uri_post_test_server);
+
+        httpd_uri_t uri_post_wifi_try = {
+            .uri      = "/api/wifi_try",
+            .method   = HTTP_POST,
+            .handler  = post_wifi_try_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &uri_post_wifi_try);
+
+        httpd_uri_t uri_post_backend_try = {
+            .uri      = "/api/backend_try",
+            .method   = HTTP_POST,
+            .handler  = post_backend_try_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &uri_post_backend_try);
 
         httpd_uri_t uri_post_clear = {
             .uri      = "/api/clear",

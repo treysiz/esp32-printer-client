@@ -27,7 +27,7 @@ extern "C" {
 #define DEFAULT_DEVICE_ID       ""          /* legacy, no longer required */
 #define DEFAULT_PRINTER_IP      "192.168.1.100"
 #define DEFAULT_PRINTER_PORT    9100
-/* Backend "WiFi 拉单" base URL. Endpoints live under <base>/printer-api/*.
+/* Backend "WiFi 拉单" base URL. Endpoints live under <base>/printer-api.
  * Use http://<server>:3000 in dev, https://<domain> in production. */
 #define DEFAULT_SERVER_URL      "http://your-server.com:3000"
 #define DEFAULT_API_TOKEN       ""          /* Bearer token from admin UI */

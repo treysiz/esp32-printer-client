@@ -47,4 +47,15 @@ CONFIG_NVS_ENCRYPTION=n
 CONFIG_FREERTOS_HZ=1000
 CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 
-# ── Logging ────────────────────────
+# ── Logging ──────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# ── Heap / Memory ────────────────────────────────────────────────────────
+CONFIG_ESP_SYSTEM_CHECK_INT_LEVEL_5=y
+
+# ── Partition table ──────────────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# ── ESP-NETIF ────────────────────────────────────────────────────────────
+CONFIG_ESP_NETIF_IP_LOST_TIMER_INTERVAL=120

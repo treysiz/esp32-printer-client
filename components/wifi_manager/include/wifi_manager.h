@@ -100,6 +100,22 @@ esp_err_t wifi_mgr_connect_from_nvs(void);
 esp_err_t wifi_mgr_connect(const char *ssid, const char *password);
 
 /**
+ * @brief  Try to connect STA with the given SSID/password RIGHT NOW, keeping
+ *         the AP config portal up (APSTA), and report the outcome. Used by the
+ *         web UI "test connect" button so the user gets live feedback before
+ *         saving. Does not persist anything to NVS.
+ * @param  timeout_ms  How long to wait for an IP before giving up.
+ * @param  out_ip      Filled with the STA IP info on success (may be NULL).
+ * @param  err/err_len Short failure reason on failure: "ap_not_found",
+ *                     "wrong_password", "timeout", ... (may be NULL).
+ * @return ESP_OK on success, ESP_FAIL on auth/assoc failure,
+ *         ESP_ERR_TIMEOUT on timeout.
+ */
+esp_err_t wifi_mgr_try_connect(const char *ssid, const char *password,
+                               uint32_t timeout_ms, esp_netif_ip_info_t *out_ip,
+                               char *err, size_t err_len);
+
+/**
  * @brief  Disconnect and stop STA.
  */
 esp_err_t wifi_mgr_disconnect(void);

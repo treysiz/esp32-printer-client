@@ -12,6 +12,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/timers.h"
 #include <string.h>
+#include <stdio.h>
 #include "esp_mac.h"
 
 static const char *TAG = "WIFI_MGR";
@@ -27,6 +28,8 @@ static bool                s_inited  = false;
 static int  s_retry   = 0;
 static bool s_sta_on  = false;
 static bool s_manual  = false;
+static volatile bool    s_try_mode   = false;  /* test-connect in progress */
+static volatile uint8_t s_try_reason = 0;      /* last STA disconnect reason */
 
 static const int BK[] = {1,3,5,10};
 #define BK_N (sizeof(BK)/sizeof(BK[0]))
@@ -170,9 +173,98 @@ esp_err_t wifi_mgr_connect(const char *ssid, const char *password)
     }
     xEventGroupClearBits(s_eg, WIFI_CONNECTED_BIT|WIFI_FAIL_BIT);
     s_retry = 0; s_manual = false;
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sc));
+    /* If WiFi auto-started a connection from flash-stored creds, the STA is in
+     * the "connecting" state and IDF 5.4 rejects esp_wifi_set_config with
+     * ESP_ERR_WIFI_STATE (0x3006). Drop any in-progress connection first, and
+     * never abort on it -- degrade gracefully so the AP config portal stays up. */
+    if (s_sta_on) esp_wifi_disconnect();
+    esp_err_t ce = esp_wifi_set_config(WIFI_IF_STA, &sc);
+    if (ce != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_set_config(STA) failed: %s", esp_err_to_name(ce));
+        return ce;
+    }
     if (s_sta_on) { esp_wifi_disconnect(); vTaskDelay(pdMS_TO_TICKS(50)); esp_wifi_connect(); }
     return ESP_OK;
+}
+
+esp_err_t wifi_mgr_try_connect(const char *ssid, const char *password,
+                               uint32_t timeout_ms, esp_netif_ip_info_t *out_ip,
+                               char *err, size_t err_len)
+{
+    if (!s_inited) return ESP_ERR_INVALID_STATE;
+    if (!ssid || !strlen(ssid)) {
+        if (err && err_len) snprintf(err, err_len, "empty_ssid");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /* Suppress normal auto-retry/fallback for the duration of the test, and
+     * capture the disconnect reason if it fails. Set flags BEFORE touching the
+     * driver so any mode-change-triggered auto-connect is handled as a test. */
+    if (s_rtimer) xTimerStop(s_rtimer, 0);
+    s_try_mode   = true;
+    s_manual     = true;
+    s_try_reason = 0;
+
+    /* Keep the AP config portal up the whole time -> force APSTA. */
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    { wifi_config_t ac; fill_ap_cfg(&ac); esp_wifi_set_config(WIFI_IF_AP, &ac); }
+    esp_wifi_start();          /* no-op if already started */
+    s_sta_on = true;
+
+    esp_wifi_disconnect();     /* drop any prior connecting/connected state */
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    wifi_config_t sc = {0};
+    strncpy((char*)sc.sta.ssid, ssid, sizeof(sc.sta.ssid)-1);
+    if (password && strlen(password)) {
+        strncpy((char*)sc.sta.password, password, sizeof(sc.sta.password)-1);
+        sc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        sc.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    }
+
+    esp_err_t ce = esp_wifi_set_config(WIFI_IF_STA, &sc);
+    if (ce != ESP_OK) {
+        s_try_mode = false; s_manual = false;
+        if (err && err_len) snprintf(err, err_len, "set_config:%s", esp_err_to_name(ce));
+        return ce;
+    }
+
+    xEventGroupClearBits(s_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    esp_wifi_connect();
+
+    EventBits_t b = xEventGroupWaitBits(s_eg, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                        pdFALSE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
+
+    esp_err_t ret;
+    if (b & WIFI_CONNECTED_BIT) {
+        if (out_ip && s_sta_nif) esp_netif_get_ip_info(s_sta_nif, out_ip);
+        if (err && err_len) err[0] = '\0';
+        ESP_LOGI(TAG, "try_connect: '%s' OK", ssid);
+        ret = ESP_OK;
+    } else if (b & WIFI_FAIL_BIT) {
+        if (err && err_len) {
+            switch (s_try_reason) {
+                case 201: snprintf(err, err_len, "ap_not_found");  break; /* NO_AP_FOUND */
+                case 2:                                                    /* AUTH_EXPIRE */
+                case 15:                                                   /* 4WAY_HANDSHAKE_TIMEOUT */
+                case 205: snprintf(err, err_len, "wrong_password"); break; /* CONNECTION_FAIL */
+                default:  snprintf(err, err_len, "disconnected:%u", (unsigned)s_try_reason); break;
+            }
+        }
+        ESP_LOGW(TAG, "try_connect: '%s' failed (reason %u)", ssid, (unsigned)s_try_reason);
+        ret = ESP_FAIL;
+    } else {
+        if (err && err_len) snprintf(err, err_len, "timeout");
+        ESP_LOGW(TAG, "try_connect: '%s' timeout", ssid);
+        ret = ESP_ERR_TIMEOUT;
+    }
+
+    /* On failure STA is left idle (no retry storm). On success it stays
+     * connected and normal reconnect resumes for future drops. */
+    s_try_mode = false;
+    s_manual   = false;
+    return ret;
 }
 
 esp_err_t wifi_mgr_disconnect(void)
@@ -241,12 +333,19 @@ static void wifi_evt(void *a, esp_event_base_t b, int32_t id, void *d)
     switch(id) {
     case WIFI_EVENT_STA_START:
         s_sta_on = true; esp_wifi_connect(); break;
-    case WIFI_EVENT_STA_DISCONNECTED:
+    case WIFI_EVENT_STA_DISCONNECTED: {
+        wifi_event_sta_disconnected_t *de = (wifi_event_sta_disconnected_t *)d;
         xEventGroupClearBits(s_eg, WIFI_CONNECTED_BIT);
+        if (s_try_mode) {                 /* test-connect: report, do not retry */
+            s_try_reason = de ? de->reason : 0;
+            xEventGroupSetBits(s_eg, WIFI_FAIL_BIT);
+            break;
+        }
         if (s_manual) break;
         s_retry++;
         if (s_retry > MAX_RETRY) do_fallback(); else sched_reconn();
         break;
+    }
     case WIFI_EVENT_AP_STACONNECTED: {
         wifi_event_ap_staconnected_t *e = d;
         ESP_LOGI(TAG,"AP client+" MACSTR, MAC2STR(e->mac)); break; }

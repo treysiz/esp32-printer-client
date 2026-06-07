@@ -25,6 +25,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +54,16 @@ esp_err_t http_client_task_start(QueueHandle_t order_queue,
  *        Drives the "云端状态 / Cloud Status" indicator in the web UI.
  */
 bool http_client_is_connected(void);
+
+/**
+ * @brief One-off test of backend reachability + auth with an EXPLICIT base URL
+ *        and Bearer token (independent of the saved config / poll task). Sends
+ *        POST <base>/printer-api/heartbeat. Returns the HTTP status (200 = OK)
+ *        or -1 on transport/precondition error; `err` receives a short reason
+ *        such as "bad_token", "not_wifi_provider", "unreachable", "bad_url".
+ */
+int http_client_test_backend(const char *base_url, const char *token,
+                             char *err, size_t err_len);
 
 #ifdef __cplusplus
 }

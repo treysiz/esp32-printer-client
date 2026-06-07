@@ -348,6 +348,64 @@ static int http_do(esp_http_client_method_t method, const char *path,
     return status;
 }
 
+/* One-off backend reachability + auth test using EXPLICIT url/token (does not
+ * touch the saved config or the running poll state). Powers the web UI
+ * "test backend" button so the user can confirm before saving.
+ * Returns the HTTP status (200 = OK), or -1 on transport/precondition error;
+ * `err` gets a short reason. Serialized with the poll task if it is running. */
+int http_client_test_backend(const char *base_url, const char *token,
+                             char *err, size_t err_len)
+{
+    if (!base_url || !(strncmp(base_url, "http://", 7) == 0 ||
+                       strncmp(base_url, "https://", 8) == 0)) {
+        if (err && err_len) snprintf(err, err_len, "bad_url");
+        return -1;
+    }
+    if (!token || token[0] == '\0') {
+        if (err && err_len) snprintf(err, err_len, "no_token");
+        return -1;
+    }
+
+    char url[256];
+    build_url(base_url, "/printer-api/heartbeat", url, sizeof(url));
+    char bearer[MAX_TOKEN_LEN + 16];
+    snprintf(bearer, sizeof(bearer), "Bearer %s", token);
+
+    esp_http_client_config_t hcfg = {
+        .url               = url,
+        .method            = HTTP_METHOD_POST,
+        .timeout_ms        = HTTP_TIMEOUT_MS,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_enable = false,
+    };
+
+    bool locked = false;
+    if (s_http.http_mutex) { xSemaphoreTake(s_http.http_mutex, portMAX_DELAY); locked = true; }
+
+    int status = -1;
+    esp_http_client_handle_t cl = esp_http_client_init(&hcfg);
+    if (cl) {
+        esp_http_client_set_header(cl, "Authorization", bearer);
+        esp_http_client_set_post_field(cl, NULL, 0);
+        esp_err_t e = esp_http_client_perform(cl);
+        if (e == ESP_OK) status = esp_http_client_get_status_code(cl);
+        else if (err && err_len) snprintf(err, err_len, "unreachable");
+        esp_http_client_cleanup(cl);
+    } else if (err && err_len) {
+        snprintf(err, err_len, "init_fail");
+    }
+
+    if (locked) xSemaphoreGive(s_http.http_mutex);
+
+    if (err && err_len) {
+        if (status == 200)      err[0] = '\0';
+        else if (status == 401) snprintf(err, err_len, "bad_token");
+        else if (status == 403) snprintf(err, err_len, "not_wifi_provider");
+        else if (status > 0)    snprintf(err, err_len, "http_%d", status);
+    }
+    return status;
+}
+
 /* Map a status code to online/auth state; log auth problems clearly. */
 static bool status_is_ok(int status, const char *what)
 {
