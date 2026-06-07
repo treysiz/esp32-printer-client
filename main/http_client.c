@@ -324,6 +324,7 @@ static int http_do(esp_http_client_method_t method, const char *path,
     esp_http_client_handle_t client = esp_http_client_init(&hcfg);
     if (client) {
         esp_http_client_set_header(client, "Authorization", bearer);
+        esp_http_client_set_header(client, "ngrok-skip-browser-warning", "true");
         if (method == HTTP_METHOD_POST) {
             esp_http_client_set_post_field(client, NULL, 0);
         }
@@ -386,6 +387,7 @@ int http_client_test_backend(const char *base_url, const char *token,
     esp_http_client_handle_t cl = esp_http_client_init(&hcfg);
     if (cl) {
         esp_http_client_set_header(cl, "Authorization", bearer);
+        esp_http_client_set_header(cl, "ngrok-skip-browser-warning", "true");
         esp_http_client_set_post_field(cl, NULL, 0);
         esp_err_t e = esp_http_client_perform(cl);
         if (e == ESP_OK) status = esp_http_client_get_status_code(cl);
