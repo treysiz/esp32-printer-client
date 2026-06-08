@@ -666,8 +666,12 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
     config.max_uri_handlers = 20;
     config.max_open_sockets = 7;
     config.lru_purge_enable = true;
-    config.recv_wait_timeout = 5;
-    config.send_wait_timeout = 5;
+    config.recv_wait_timeout = 15;   /* allow long handlers (backend HTTPS test) */
+    config.send_wait_timeout = 15;
+    /* The "test backend" handler performs an HTTPS (mbedTLS) request inline;
+     * the default 4 KB httpd task stack is too small for a TLS handshake, so
+     * give it room. */
+    config.stack_size = 12288;
     httpd_handle_t server = NULL;
 
     ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);

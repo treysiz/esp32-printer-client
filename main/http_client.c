@@ -390,8 +390,13 @@ int http_client_test_backend(const char *base_url, const char *token,
         esp_http_client_set_header(cl, "ngrok-skip-browser-warning", "true");
         esp_http_client_set_post_field(cl, NULL, 0);
         esp_err_t e = esp_http_client_perform(cl);
-        if (e == ESP_OK) status = esp_http_client_get_status_code(cl);
-        else if (err && err_len) snprintf(err, err_len, "unreachable");
+        if (e == ESP_OK) {
+            status = esp_http_client_get_status_code(cl);
+            ESP_LOGI(TAG, "test_backend %s -> HTTP %d", url, status);
+        } else {
+            ESP_LOGW(TAG, "test_backend %s transport error: %s", url, esp_err_to_name(e));
+            if (err && err_len) snprintf(err, err_len, "unreachable");
+        }
         esp_http_client_cleanup(cl);
     } else if (err && err_len) {
         snprintf(err, err_len, "init_fail");
