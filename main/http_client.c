@@ -63,8 +63,9 @@ static const char *TAG = "HTTP_CLIENT";
  * internal RAM, shrinking on failure (see task start). PSRAM is strongly
  * recommended for production so job bursts and 80mm receipts always fit.
  */
-#define HTTP_RESP_PREFERRED  (256 * 1024)
-#define HTTP_RESP_MIN        (24 * 1024)
+#define HTTP_RESP_PREFERRED    (256 * 1024)  /* big buffer: ONLY from PSRAM        */
+#define HTTP_RESP_INTERNAL_MAX (48 * 1024)   /* cap without PSRAM, to spare TLS heap */
+#define HTTP_RESP_MIN          (8 * 1024)
 
 /* ── Internal state ─────────────────────────────────────────────────── */
 typedef struct {
@@ -654,9 +655,18 @@ esp_err_t http_client_task_start(QueueHandle_t order_queue,
      * (PSRAM-first via big_malloc). This avoids a boot loop on boards with
      * little free RAM; we just cap the max receipt size we can handle. */
     s_http.resp_cap = 0;
-    for (int sz = HTTP_RESP_PREFERRED; sz >= HTTP_RESP_MIN; sz -= (16 * 1024)) {
-        s_http.resp_buf = big_malloc(sz);
-        if (s_http.resp_buf) { s_http.resp_cap = sz; break; }
+    s_http.resp_buf = heap_caps_malloc(HTTP_RESP_PREFERRED, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_http.resp_buf) {
+        s_http.resp_cap = HTTP_RESP_PREFERRED;        /* PSRAM available */
+    } else {
+        /* No PSRAM: keep the buffer SMALL so the TLS handshake (~40 KB heap)
+         * and the rest of the system keep enough RAM. A large internal buffer
+         * previously starved the heap -> mbedtls_ssl_setup -0x7F00 (alloc
+         * failed) -> all HTTPS broke. Large/Chinese receipts need PSRAM. */
+        for (int sz = HTTP_RESP_INTERNAL_MAX; sz >= HTTP_RESP_MIN; sz -= (8 * 1024)) {
+            s_http.resp_buf = malloc(sz);
+            if (s_http.resp_buf) { s_http.resp_cap = sz; break; }
+        }
     }
     if (!s_http.resp_buf) {
         ESP_LOGE(TAG, "Failed to allocate /jobs response buffer (>= %d bytes)",
@@ -664,9 +674,10 @@ esp_err_t http_client_task_start(QueueHandle_t order_queue,
         return ESP_ERR_NO_MEM;
     }
     if (s_http.resp_cap < HTTP_RESP_PREFERRED) {
-        ESP_LOGW(TAG, "Response buffer is %d bytes (< preferred %d). Large "
-                      "receipts may not fit - consider enabling PSRAM.",
-                 s_http.resp_cap, HTTP_RESP_PREFERRED);
+        ESP_LOGW(TAG, "Response buffer %d bytes (no PSRAM); small receipts only. "
+                      "Enable PSRAM for large/Chinese receipts. Free internal=%u",
+                 s_http.resp_cap,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }
 
     BaseType_t ret = xTaskCreate(poll_task, "http_poll", 8192, NULL, 5, NULL);
