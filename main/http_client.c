@@ -715,9 +715,29 @@ static void result_task(void *arg)
         const char *verb = (result.status == PRINT_STATUS_SUCCESS) ? "done" : "failed";
         snprintf(path, sizeof(path), "/printer-api/jobs/%s/%s", result.order_id, verb);
 
-        int status = http_do(HTTP_METHOD_POST, path, NULL, 0, NULL, NULL);
+        /* Small buffer: /failed answers with `willRetry`, i.e. whether the job
+         * stays pending for a later poll or the backend has given up on it.
+         * Cheap to capture and the first thing you want when chasing a receipt
+         * that never came out. */
+        char body[192] = {0};
+        int  body_len  = 0;
+
+        int status = http_do(HTTP_METHOD_POST, path,
+                             body, (int)sizeof(body) - 1, &body_len, NULL);
         if (status == 200) {
-            ESP_LOGI(TAG, "Reported %s for job [%s]", verb, result.order_id);
+            const char *retry_note = "";
+            if (result.status != PRINT_STATUS_SUCCESS && body_len > 0) {
+                cJSON *r = cJSON_ParseWithLength(body, (size_t)body_len);
+                cJSON *w = r ? cJSON_GetObjectItemCaseSensitive(r, "willRetry") : NULL;
+                if (cJSON_IsBool(w)) {
+                    retry_note = cJSON_IsTrue(w)
+                        ? " willRetry=true (backend will re-send)"
+                        : " willRetry=false (backend gave up; alert raised)";
+                }
+                cJSON_Delete(r);
+            }
+            ESP_LOGI(TAG, "Reported %s for job [%s]%s",
+                     verb, result.order_id, retry_note);
         } else if (status == 404) {
             ESP_LOGW(TAG, "Job [%s] not found when reporting %s (already done?)",
                      result.order_id, verb);

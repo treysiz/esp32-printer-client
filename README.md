@@ -22,7 +22,9 @@ printer on TCP port 9100.
   **~4 s**: one job at a time, oldest first. Each job's `content` is decoded to
   exact bytes and queued for printing `copies` times.
 - **Report** — `POST .../jobs/<id>/done` on success, `.../jobs/<id>/failed` on
-  failure (printer offline, out of paper, etc.).
+  failure (printer offline, **out of paper**, etc.). A failed job stays pending
+  on the backend and comes back on a later poll, so it prints itself once the
+  problem is fixed; the response's `willRetry` flag is logged.
 - Every request carries `Authorization: Bearer <API_TOKEN>`.
 - Last-20-job de-duplication prevents reprinting a job still `pending` in a
   poll that races with our report.
@@ -46,6 +48,30 @@ Either way the result is byte-identical to the original ESC/POS, which is why
 ESC/POS text mode. The payload routinely contains `0x00` bytes (white pixels),
 so it is binary end-to-end (explicit length, never `strlen`). See the decode
 section of `main/http_client.c`.
+
+### Paper detection (why a receipt can no longer vanish)
+Writing to a printer that is out of paper succeeds at every level the firmware
+can see: TCP connects, `send()` returns, the job gets reported `done`. Nothing
+prints and nobody notices. So the firmware asks the printer directly, using the
+ESC/POS real-time query `DLE EOT 4` (`0x10 0x04 0x04`), **before and after**
+each payload. On paper-out it skips/abandons the print and reports `/failed`;
+the backend keeps such a job pending and hands it back on the next poll, so the
+receipt prints by itself once the roll is replaced — no manual step.
+
+Two deliberate trade-offs:
+
+- **Unknown status fails open.** Not every printer implements `DLE EOT`. A
+  timeout, no reply, or a reply that violates the protocol's fixed bits is
+  treated as "print anyway". Treating silence as failure would brick printing
+  entirely on those machines.
+- **A duplicate beats a lost receipt.** If the roll runs out mid-receipt you
+  get a short one plus a full reprint. Staff bin the short one; a *missing*
+  receipt means a customer never gets their food.
+
+> ⚠ The sensor bit assignments (bits 2,3 = near-end; bits 5,6 = paper-end) are
+> the EPSON standard and most clones follow it, but **verify against your
+> actual machine** — pull the roll, read once, put it back, read again, see
+> which bits flip. See `query_paper_status()` in `main/printer.c`.
 
 ### Hardware
 - ESP32-S3 board (**PSRAM required** — see Memory below)
@@ -132,7 +158,9 @@ WebSocket 推送改为后台“WiFi 拉单”HTTP 模式，无需改动后台任
 - **心跳**：每 **30 秒** `POST <base>/printer-api/heartbeat`（后台显示 Online）。
 - **拉单**：每 **约 4 秒** `GET <base>/printer-api/jobs?limit=1&encoding=base64`，
   一次只取最早的一条，把任务的 `content` 还原为精确字节，按 `copies` 份数打印。
-- **回报**：成功 `POST .../jobs/<id>/done`，失败 `POST .../jobs/<id>/failed`。
+- **回报**：成功 `POST .../jobs/<id>/done`，失败 `POST .../jobs/<id>/failed`（打印机
+  离线、**缺纸**等）。失败的任务在后台仍保持 pending，下一轮轮询会再发回来，
+  问题解决后小票会自己打出来；响应里的 `willRetry` 会打进日志。
 - 每个请求都带 `Authorization: Bearer <API_TOKEN>`。
 - 保留“最近 20 单去重”，避免在回报与轮询竞争时重复打印仍为 `pending` 的任务。
 
@@ -143,6 +171,26 @@ WebSocket 推送改为后台“WiFi 拉单”HTTP 模式，无需改动后台任
 这就是**中文菜名能正常打印**的原因——文字在图片里，而非 ESC/POS 文本模式。光栅
 数据里大量是 `0x00`（白色像素），所以全程按二进制处理（显式长度，绝不用 strlen）。
 详见 `main/http_client.c` 的解码部分。
+
+### 缺纸检测（为什么小票不会再凭空消失）
+往一台没纸的打印机写数据，在固件能看到的每一层都是「成功」：TCP 连上了、
+`send()` 返回了、任务照常上报 `done`。可是什么都没打出来，也没有人会发现。
+所以固件改成直接问打印机：用 ESC/POS 实时状态查询 `DLE EOT 4`
+（`0x10 0x04 0x04`），在每份数据**发送前和发送后**各问一次。缺纸时不发数据
+（或判定本次作废），改报 `/failed`；后端会把这条任务继续保持 pending，下一轮
+轮询再发回来 —— 换上纸卷后小票**自动打出来，不需要任何人工操作**。
+
+两个有意为之的取舍：
+
+- **读不到状态就照常打印（fail open）**。不是所有机器都实现了 `DLE EOT`。
+  超时、无回应、或回的字节不符合协议固定位，一律当作「状态未知，继续打」。
+  要是把沉默当成失败，换一台不支持的机器上去会一张都打不出来。
+- **宁可多打一张，不可静默丢单**。打到一半纸用完，会出现半张 + 一张完整的。
+  半张店员扔掉就行；**小票丢了客人拿不到餐**。
+
+> ⚠ 传感器位定义（bit 2,3 = 纸快用完；bit 5,6 = 没纸）是 EPSON 标准，多数
+> 国产机跟随，但**务必拿你手上那台机器验一次** —— 把纸取出来读一次、装回去
+> 再读一次，看哪一位翻转了。详见 `main/printer.c` 的 `query_paper_status()`。
 
 ### 硬件需求
 - ESP32-S3 开发板（**必须带 PSRAM**，见下方“内存说明”）

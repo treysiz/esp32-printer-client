@@ -56,6 +56,10 @@ API_TOKEN = "testtoken"
 DEFAULT_JOB_LIMIT = 1
 MAX_JOB_LIMIT = 20
 
+# /failed keeps a job pending so it gets handed out again on a later poll.
+# After this many attempts the backend declares it dead and alerts instead.
+MAX_FAILED_ATTEMPTS = 30
+
 JOBS = {}            # id -> job dict (status: pending|printed|failed)
 SEQ = itertools.count()   # insertion order, so /jobs can answer oldest-first
 LOCK = threading.Lock()
@@ -156,6 +160,7 @@ def make_job(order_number, copies=1):
         "raw": payload,            # kept as bytes; encoded per request
         "copies": copies,
         "status": "pending",
+        "attempts": 0,          # how many times the client reported /failed
         "createdAt": "2026-06-04T21:44:00.000Z",
         "printedAt": None,
     }
@@ -174,7 +179,7 @@ def serialize_job(job, encoding):
     else:
         encoding = "latin1"
         content = job["raw"].decode("latin1")
-    out = {k: v for k, v in job.items() if k not in ("raw", "seq")}
+    out = {k: v for k, v in job.items() if k not in ("raw", "seq", "attempts")}
     out["content"] = content
     out["contentEncoding"] = encoding
     return out
@@ -249,9 +254,26 @@ class Handler(BaseHTTPRequestHandler):
                 job = JOBS.get(jid)
                 if not job:
                     return self._json(404, {"success": False, "error": "not found"})
-                job["status"] = "printed" if verb == "done" else "failed"
-            print("[%s] id=%s -> status now %s" % (verb, jid, job["status"]))
-            return self._json(200, {"success": True})
+
+                if verb == "done":
+                    job["status"] = "printed"
+                    print("[done] id=%s -> status now printed" % jid)
+                    return self._json(200, {"success": True})
+
+                # /failed means "not this time, hand it back later" -- the job
+                # stays pending so the next poll picks it up again. Only after
+                # MAX_FAILED_ATTEMPTS do we call it dead and alert.
+                job["attempts"] = job.get("attempts", 0) + 1
+                will_retry = job["attempts"] < MAX_FAILED_ATTEMPTS
+                job["status"] = "pending" if will_retry else "failed"
+
+            print("[failed] id=%s attempt %d/%d -> %s (willRetry=%s)"
+                  % (jid, job["attempts"], MAX_FAILED_ATTEMPTS,
+                     job["status"], will_retry))
+            if not will_retry:
+                print("  !! giving up on %s -- this is where the real backend "
+                      "writes print_failures and raises the alert" % jid)
+            return self._json(200, {"success": True, "willRetry": will_retry})
         self._json(404, {"success": False, "error": "not found"})
 
 
