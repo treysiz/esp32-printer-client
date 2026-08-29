@@ -146,6 +146,35 @@ python3 test_server.py --port 3000 --token testtoken
 Point the firmware at `http://<your-pc-ip>:3000` with token `testtoken`, then
 press Enter in the console to queue jobs.
 
+`test_printer.py` is a mock ESC/POS printer on port 9100 for testing paper
+detection without a real printer — or a real paper roll:
+
+```
+python3 test_printer.py --mode paper       # normal path
+python3 test_printer.py --mode no-paper    # /failed, then Enter to refill
+python3 test_printer.py --mode runs-out --after 4096   # short + full reprint
+python3 test_printer.py --mode silent      # never answers DLE EOT
+python3 test_printer.py --mode garbage     # answers an invalid byte
+```
+
+Press Enter to toggle paper at runtime — that is how you test "put the roll
+back and the receipt prints itself" without restarting anything.
+
+**`silent` and `garbage` are the important ones.** They are the two halves of
+the fail-open requirement, and there is no other practical way to test it: you
+would otherwise have to go buy a printer that doesn't implement `DLE EOT`. Both
+must end with the receipt printed anyway. A broken fail-open is worse than the
+bug this feature fixes — it takes out every printer that doesn't support the
+query.
+
+> ⚠ The mock encodes the sensor bits the same way the firmware reads them, so
+> these tests stay green even if that layout is wrong for your printer. They
+> prove the firmware's *logic branches*, not the bit numbers. Verify those
+> against the real machine (see the header of `test_printer.py`).
+
+Together with `test_server.py` this closes the loop on one laptop: real ESP32 +
+fake backend + fake printer.
+
 ---
 
 <h2 id="chinese">🇨🇳 中文</h2>
@@ -248,3 +277,28 @@ python3 test_server.py --port 3000 --token testtoken
 ```
 然后把固件的后台地址设为 `http://<你的电脑IP>:3000`、Token 设为 `testtoken`，
 在控制台按回车即可下发测试订单。
+
+`test_printer.py` 是 9100 端口的模拟 ESC/POS 打印机，用来测缺纸检测 ——
+不用真打印机，也不用真去抽纸卷：
+
+```
+python3 test_printer.py --mode paper       # 正常路径
+python3 test_printer.py --mode no-paper    # 报 /failed，按回车“装纸”后自动补打
+python3 test_printer.py --mode runs-out --after 4096   # 半张 + 换纸后完整一张
+python3 test_printer.py --mode silent      # 完全不响应 DLE EOT
+python3 test_printer.py --mode garbage     # 回一个乱字节
+```
+
+按回车可以随时切换有纸/无纸 —— 这样才能在不重启任何东西的情况下验证
+「装回纸，小票自己打出来」。
+
+**`silent` 和 `garbage` 是最重要的两个。** 它们是 fail-open 的两条路径，而且
+没有 mock 基本没法测：否则你得真去买一台不支持 `DLE EOT` 的机器。两种模式下
+小票都必须照常打出来。**fail-open 写错比这个功能要修的 bug 更严重** ——
+症状是所有不支持该查询的打印机一张都打不出来。
+
+> ⚠ mock 里的位定义和固件读取方式是同一套假设，所以哪怕这套位对你的机器是错的，
+> 测试照样全绿。它验证的是固件的**逻辑分支**，不是位号。位号必须拿实机核对
+> （见 `test_printer.py` 文件头）。
+
+配合 `test_server.py`，一台笔记本就能跑完整闭环：真 ESP32 + 假后台 + 假打印机。
