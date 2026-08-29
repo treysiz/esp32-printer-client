@@ -10,15 +10,25 @@
  *  THE ONE THING THAT MATTERS MOST: decoding `content` (see decode section).
  * ─────────────────────────────────────────────────────────────────────────
  *  The backend renders the whole receipt to an image and emits ESC/POS raster
- *  bytes (GS v 0). Those raw bytes (0x00–0xFF, lots of 0x00 for white pixels)
- *  are placed into JSON by latin1-decoding them to a string. Over the wire the
- *  JSON is UTF-8, so:
- *    - a raw byte 0x00–0x7F  -> 1 byte (or a JSON escape like \n, )
- *    - a raw byte 0x80–0xFF  -> 2 UTF-8 bytes (latin1 char U+0080..U+00FF)
- *  To recover the EXACT original bytes we JSON-unescape, UTF-8-decode to code
- *  points, and take (codepoint & 0xFF). We do NOT use cJSON's valuestring for
- *  `content`, because an embedded 0x00 (\u0000) would truncate it. Instead we
- *  decode straight from the raw response buffer with an explicit length.
+ *  bytes (GS v 0): 0x00-0xFF, with lots of 0x00 for white pixels. Every job
+ *  carries a `contentEncoding` field saying how those bytes were packed into
+ *  the JSON string, so we never have to guess:
+ *
+ *   "base64"  - what we ask for (?encoding=base64). Pure ASCII, so cJSON's
+ *               valuestring is safe and mbedtls_base64_decode() gives us the
+ *               exact original bytes. ~4.2x smaller on the wire than latin1.
+ *
+ *   "latin1"  - legacy shape, and what an older backend that ignores the query
+ *               param still sends. Raw bytes latin1-decoded into a string; over
+ *               the wire the JSON is UTF-8, so:
+ *                 - a raw byte 0x00-0x7F -> 1 byte (or a JSON escape)
+ *                 - a raw byte 0x80-0xFF -> 2 UTF-8 bytes (U+0080..U+00FF)
+ *               To recover the EXACT bytes we JSON-unescape, UTF-8-decode to
+ *               code points, and take (codepoint & 0xFF). cJSON's valuestring
+ *               is useless here (an embedded 0x00 arrives as a 6-byte JSON
+ *               escape and would truncate the C string), so we decode from
+ *               the raw response buffer with an explicit length. Kept only as
+ *               a fallback so this firmware works against both backends.
  */
 
 #include "http_client.h"
@@ -32,6 +42,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "cJSON.h"
+#include "mbedtls/base64.h"   /* bundled with ESP-IDF, no extra dependency */
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -54,14 +65,17 @@ static const char *TAG = "HTTP_CLIENT";
 /*
  * Max size of a single /jobs response buffer.
  *
- * Sizing note: `content` is a raster bitmap whose white pixels are 0x00, and
- * the backend JSON-encodes every 0x00 as the 6-byte sequence "\u0000". A
- * receipt that is, say, 12 KB of raster (mostly white) therefore expands to
- * ~70 KB of JSON. /jobs returns ALL pending jobs in one response, so a burst
- * (e.g. after a brief outage) can be several hundred KB. The buffer must be
- * generous: we allocate from PSRAM when present (big_malloc) and fall back to
- * internal RAM, shrinking on failure (see task start). PSRAM is strongly
- * recommended for production so job bursts and 80mm receipts always fit.
+ * Sizing note: we poll with `?limit=1&encoding=base64`, so a response carries
+ * ONE job whose `content` is base64 (4/3 of the raw raster) instead of the old
+ * latin1-in-JSON form (~5.6x, because every white-pixel 0x00 became the 6-byte
+ * JSON escape). Measured across 535 real receipts, base64 responses run
+ * ~137 KB median and ~210 KB at the top end, so 256 KB has comfortable margin
+ * and no longer needs an allowance for 6x expansion.
+ *
+ * PSRAM is a hard requirement in practice: 137-210 KB never fits inside
+ * HTTP_RESP_INTERNAL_MAX (48 KB), the cap we fall back to when there is no
+ * PSRAM (a large internal buffer starves the TLS handshake -> -0x7F00). A board
+ * without PSRAM can reach the backend but cannot receive a real receipt.
  */
 #define HTTP_RESP_PREFERRED    (256 * 1024)  /* big buffer: ONLY from PSRAM        */
 #define HTTP_RESP_INTERNAL_MAX (48 * 1024)   /* cap without PSRAM, to spare TLS heap */
@@ -124,8 +138,53 @@ static void record_order_id(const char *order_id)
 }
 
 /* ════════════════════════════════════════════════════════════════════ */
-/*  content decode: latin1-in-JSON  ->  exact raw ESC/POS bytes          */
+/*  content decode: base64 (preferred) / latin1-in-JSON (fallback)       */
+/*                            ->  exact raw ESC/POS bytes                */
 /* ════════════════════════════════════════════════════════════════════ */
+
+/*
+ * base64 path — the one we normally take. `content` is pure ASCII here, so
+ * cJSON's valuestring is safe (no embedded NUL can truncate it) and mbedtls
+ * gives us the original bytes back verbatim: 0x00, 0x1B, 0x1D and 0x80-0xFF
+ * all survive untouched.
+ *
+ * Caller owns *out on success and must free() it.
+ */
+static bool decode_base64_content(const cJSON *c_item,
+                                  uint8_t **out, size_t *out_len)
+{
+    if (!cJSON_IsString(c_item) || !c_item->valuestring) return false;
+
+    const unsigned char *src = (const unsigned char *)c_item->valuestring;
+    size_t src_len = strlen(c_item->valuestring);
+
+    /* Ask how big the plaintext is: with dst=NULL/dlen=0 mbedtls writes the
+     * required length into `need` and returns BUFFER_TOO_SMALL. */
+    size_t need = 0;
+    (void)mbedtls_base64_decode(NULL, 0, &need, src, src_len);
+
+    size_t cap = need ? need : 1;
+    uint8_t *buf = big_malloc(cap);
+    if (!buf) {
+        ESP_LOGE(TAG, "OOM decoding base64 content (%u bytes)", (unsigned)need);
+        return false;
+    }
+
+    size_t got = 0;
+    int rc = mbedtls_base64_decode(buf, cap, &got, src, src_len);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "base64 decode failed (-0x%04X), b64_len=%u",
+                 (unsigned)(-rc), (unsigned)src_len);
+        free(buf);
+        return false;
+    }
+
+    *out     = buf;
+    *out_len = got;
+    return true;
+}
+
+/* ── latin1 fallback (old backends) ─────────────────────────────────── */
 
 static int hexval(char c)
 {
@@ -209,12 +268,16 @@ static size_t scan_decode(const char *p, const char *bufend,
 }
 
 /*
- * Find the next `"content"` key starting at *cursor, decode its string value
- * into a freshly heap-allocated byte buffer, and advance *cursor past it.
- * Returns true on success (caller owns *out and must free()).
+ * Find the next `"content"` key starting at *cursor, point *val at the first
+ * char of its string value (just after the opening quote), and advance *cursor
+ * past the closing quote so the following call lands on the next element.
+ *
+ * This only locates; nothing is allocated. Call it for EVERY array element —
+ * including base64 ones whose value we take from cJSON — so the k-th
+ * `"content"` key stays aligned with the k-th element.
  */
-static bool next_content(const char **cursor, const char *bufend,
-                         uint8_t **out, size_t *out_len)
+static bool next_content_value(const char **cursor, const char *bufend,
+                               const char **val)
 {
     const char *p = *cursor;
 
@@ -238,21 +301,34 @@ static bool next_content(const char **cursor, const char *bufend,
         p++; /* now at first char of the value */
 
         const char *end = NULL;
-        size_t len = scan_decode(p, bufend, NULL, &end); /* pass 1: size */
+        scan_decode(p, bufend, NULL, &end); /* locate the closing quote */
 
-        uint8_t *buf = big_malloc(len ? len : 1);
-        if (!buf) {
-            ESP_LOGE(TAG, "OOM decoding content (%u bytes)", (unsigned)len);
-            return false;
-        }
-        scan_decode(p, bufend, buf, &end);               /* pass 2: decode */
-
-        *out = buf;
-        *out_len = len;
+        *val    = p;
         *cursor = end;
         return true;
     }
     return false;
+}
+
+/*
+ * Decode a value located by next_content_value() into a freshly heap-allocated
+ * byte buffer. Caller owns *out and must free() it.
+ */
+static bool decode_latin1_content(const char *val, const char *bufend,
+                                  uint8_t **out, size_t *out_len)
+{
+    size_t len = scan_decode(val, bufend, NULL, NULL); /* pass 1: size */
+
+    uint8_t *buf = big_malloc(len ? len : 1);
+    if (!buf) {
+        ESP_LOGE(TAG, "OOM decoding latin1 content (%u bytes)", (unsigned)len);
+        return false;
+    }
+    scan_decode(val, bufend, buf, NULL);               /* pass 2: decode */
+
+    *out     = buf;
+    *out_len = len;
+    return true;
 }
 
 /* ════════════════════════════════════════════════════════════════════ */
@@ -487,7 +563,13 @@ static void do_poll_jobs(void)
 {
     int resp_len = 0;
     bool overflow = false;
-    int status = http_do(HTTP_METHOD_GET, "/printer-api/jobs",
+    /* `limit=1` matches the backend default, but we say it explicitly so we
+     * never inherit a future change to that default. `encoding=base64` keeps
+     * the response ~4.2x smaller than the latin1-in-JSON form. Both params are
+     * optional on the backend, so an older one just ignores them and answers
+     * with contentEncoding="latin1" (or omits the field) — handled below.
+     * build_url() concatenates verbatim, so '?' and '&' go out untouched. */
+    int status = http_do(HTTP_METHOD_GET, "/printer-api/jobs?limit=1&encoding=base64",
                          s_http.resp_buf, s_http.resp_cap, &resp_len, &overflow);
 
     if (!status_is_ok(status, "jobs")) {
@@ -498,8 +580,8 @@ static void do_poll_jobs(void)
 
     if (overflow) {
         ESP_LOGE(TAG, "/jobs response exceeded the %d-byte buffer; skipping "
-                      "batch. Enable PSRAM and/or raise HTTP_RESP_PREFERRED "
-                      "(white-pixel 0x00 bytes expand 6x as \\u0000 in JSON).",
+                      "batch. A base64 receipt is ~137-210 KB, so this board "
+                      "almost certainly has no PSRAM (see HTTP_RESP_PREFERRED).",
                  s_http.resp_cap);
         return;
     }
@@ -517,9 +599,11 @@ static void do_poll_jobs(void)
         return; /* no jobs */
     }
 
-    /* Parallel raw cursor used ONLY to extract binary-safe `content`. cJSON
-     * preserves document order, so the k-th "content" key aligns with the
-     * k-th array element. */
+    /* Parallel raw cursor into the response, needed only by the latin1
+     * fallback (cJSON's valuestring truncates at the first embedded NUL). We
+     * advance it for EVERY element — base64 ones included — because cJSON
+     * preserves document order, so the k-th "content" key must stay aligned
+     * with the k-th array element. */
     const char *content_cursor = s_http.resp_buf;
     const char *buf_end = s_http.resp_buf + resp_len;
 
@@ -527,20 +611,36 @@ static void do_poll_jobs(void)
     cJSON_ArrayForEach(elem, data) {
         cJSON *id_item     = cJSON_GetObjectItemCaseSensitive(elem, "id");
         cJSON *copies_item = cJSON_GetObjectItemCaseSensitive(elem, "copies");
+        cJSON *enc_item    = cJSON_GetObjectItemCaseSensitive(elem, "contentEncoding");
+        cJSON *c_item      = cJSON_GetObjectItemCaseSensitive(elem, "content");
 
-        /* Always advance the content cursor for every element to stay aligned,
-         * even if we end up skipping the job. */
-        uint8_t *content = NULL;
-        size_t   clen = 0;
-        bool got_content = next_content(&content_cursor, buf_end, &content, &clen);
+        /* Keep the raw cursor in step whether or not we end up using it. */
+        const char *raw_val = NULL;
+        bool located = next_content_value(&content_cursor, buf_end, &raw_val);
 
         if (!cJSON_IsString(id_item) || !id_item->valuestring) {
             ESP_LOGW(TAG, "job element missing 'id'");
-            if (got_content) free(content);
             continue;
         }
+
+        /* A backend that predates `contentEncoding` only ever spoke latin1. */
+        const char *enc = (cJSON_IsString(enc_item) && enc_item->valuestring)
+                              ? enc_item->valuestring : "latin1";
+
+        uint8_t *content = NULL;
+        size_t   clen    = 0;
+        bool     got_content;
+
+        if (strcmp(enc, "base64") == 0) {
+            got_content = decode_base64_content(c_item, &content, &clen);
+        } else {
+            got_content = located &&
+                          decode_latin1_content(raw_val, buf_end, &content, &clen);
+        }
+
         if (!got_content) {
-            ESP_LOGW(TAG, "job [%s] missing/undecodable 'content'", id_item->valuestring);
+            ESP_LOGW(TAG, "job [%s] missing/undecodable 'content' (encoding=%s)",
+                     id_item->valuestring, enc);
             continue;
         }
 
@@ -674,8 +774,10 @@ esp_err_t http_client_task_start(QueueHandle_t order_queue,
         return ESP_ERR_NO_MEM;
     }
     if (s_http.resp_cap < HTTP_RESP_PREFERRED) {
-        ESP_LOGW(TAG, "Response buffer %d bytes (no PSRAM); small receipts only. "
-                      "Enable PSRAM for large/Chinese receipts. Free internal=%u",
+        ESP_LOGE(TAG, "Response buffer only %d bytes (no PSRAM). A real receipt "
+                      "is ~137-210 KB even as base64, so /jobs responses WILL "
+                      "overflow and no job can be printed. PSRAM is required. "
+                      "Free internal=%u",
                  s_http.resp_cap,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     }

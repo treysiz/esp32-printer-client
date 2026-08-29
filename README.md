@@ -18,8 +18,9 @@ printer on TCP port 9100.
 ### How it works (main loop)
 - **Heartbeat** — `POST <base>/printer-api/heartbeat` every **30 s** (keeps the
   printer "Online" in the admin UI).
-- **Pull jobs** — `GET <base>/printer-api/jobs` every **~4 s**. Each job's
-  `content` is decoded to exact bytes and queued for printing `copies` times.
+- **Pull jobs** — `GET <base>/printer-api/jobs?limit=1&encoding=base64` every
+  **~4 s**: one job at a time, oldest first. Each job's `content` is decoded to
+  exact bytes and queued for printing `copies` times.
 - **Report** — `POST .../jobs/<id>/done` on success, `.../jobs/<id>/failed` on
   failure (printer offline, out of paper, etc.).
 - Every request carries `Authorization: Bearer <API_TOKEN>`.
@@ -28,16 +29,26 @@ printer on TCP port 9100.
 
 ### The important bit: `content` decoding
 `content` is the whole receipt rendered to an image as ESC/POS **raster** bytes
-(`GS v 0`). The backend latin1-decodes those raw bytes into a JSON string; over
-the wire the JSON is UTF-8. The firmware recovers the **exact** original bytes
-by JSON-unescaping, UTF-8-decoding to code points, and taking `codepoint &
-0xFF`. This is why **Chinese menu names print correctly** — the text lives in
-the image, not in ESC/POS text mode. The payload routinely contains `0x00`
-bytes (white pixels), so it is binary end-to-end (explicit length, never
-`strlen`). See the decode section of `main/http_client.c`.
+(`GS v 0`). Every job carries a `contentEncoding` field saying how those bytes
+were packed into JSON, so the firmware never has to guess:
+
+- **`base64`** — what we ask for (`?encoding=base64`), and the normal path.
+  Pure ASCII, so `mbedtls_base64_decode()` hands back the original bytes
+  verbatim.
+- **`latin1`** — the legacy shape, still sent by a backend that predates the
+  query param. Raw bytes latin1-decoded into a JSON string, transmitted as
+  UTF-8; the firmware recovers the exact bytes by JSON-unescaping,
+  UTF-8-decoding to code points, and taking `codepoint & 0xFF`. Kept as a
+  fallback so one firmware image works against both backends.
+
+Either way the result is byte-identical to the original ESC/POS, which is why
+**Chinese menu names print correctly** — the text lives in the image, not in
+ESC/POS text mode. The payload routinely contains `0x00` bytes (white pixels),
+so it is binary end-to-end (explicit length, never `strlen`). See the decode
+section of `main/http_client.c`.
 
 ### Hardware
-- ESP32-S3 board (**PSRAM strongly recommended** — see Memory below)
+- ESP32-S3 board (**PSRAM required** — see Memory below)
 - LAN thermal printer listening on port 9100
 
 ### Configure
@@ -69,18 +80,27 @@ idf.py flash monitor
 HTTPS works out of the box via the bundled root-CA store
 (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` in `sdkconfig.defaults`).
 
-### Memory (why PSRAM)
-A receipt is mostly white pixels = `0x00`, and the backend encodes each `0x00`
-as a 6-byte JSON escape. A 12 KB raster therefore becomes ~70 KB of JSON, and
-`GET /jobs` returns **all** pending jobs at once. The response buffer
-(`HTTP_RESP_PREFERRED`, default 256 KB) is allocated from PSRAM when present and
-shrinks to fit internal RAM otherwise.
+### Memory (PSRAM is required, not optional)
+Measured over 535 real receipts, a `?encoding=base64` response runs **~137 KB
+median and ~210 KB at the top end**. The response buffer
+(`HTTP_RESP_PREFERRED`, 256 KB) covers that — **but only out of PSRAM**.
+
+Without PSRAM the firmware deliberately caps the buffer at
+`HTTP_RESP_INTERNAL_MAX` (48 KB), because a large buffer in internal RAM
+starves the TLS handshake (`mbedtls_ssl_setup` → `-0x7F00`) and breaks HTTPS
+outright. 48 KB can never hold a real receipt, so such a board will reach the
+backend, log an overflow on every poll, and print nothing. **Use a board with
+PSRAM.**
+
+(For scale: the older `latin1` encoding put each white-pixel `0x00` on the wire
+as a 6-byte JSON escape, inflating the same receipts ~5.6x to a 371 KB
+median — which is why base64 is now the default request.)
 
 ### Backend API contract (consumed by the firmware)
 | Method | Path | Body | Success |
 |---|---|---|---|
 | POST | `/printer-api/heartbeat` | none | `{"success":true,"printerId","name"}` |
-| GET  | `/printer-api/jobs` | none | `{"success":true,"data":[ {id,content,copies,...} ]}` |
+| GET  | `/printer-api/jobs?limit=1&encoding=base64` | none | `{"success":true,"data":[ {id,content,contentEncoding,copies,...} ]}` |
 | POST | `/printer-api/jobs/:id/done` | none | `{"success":true}` |
 | POST | `/printer-api/jobs/:id/failed` | none | `{"success":true}` |
 
@@ -88,7 +108,10 @@ Auth errors: `401` (missing/invalid token), `403` (token's printer is not
 `provider='wifi'`).
 
 ### Local testing without the backend
-`test_server.py` is a mock backend implementing the same contract. With Pillow
+`test_server.py` is a mock backend implementing the same contract, including
+`?limit=` (default 1, cap 20, illegal values fall back to the default) and
+`?encoding=base64` with the matching `contentEncoding` field — so both the
+base64 path and the latin1 fallback can be exercised locally. With Pillow
 installed it renders a real Chinese raster receipt (`GS v 0`); otherwise it
 falls back to plain ESC/POS text.
 ```
@@ -107,8 +130,8 @@ WebSocket 推送改为后台“WiFi 拉单”HTTP 模式，无需改动后台任
 
 ### 工作原理（主循环）
 - **心跳**：每 **30 秒** `POST <base>/printer-api/heartbeat`（后台显示 Online）。
-- **拉单**：每 **约 4 秒** `GET <base>/printer-api/jobs`，把每个任务的 `content`
-  还原为精确字节，按 `copies` 份数打印。
+- **拉单**：每 **约 4 秒** `GET <base>/printer-api/jobs?limit=1&encoding=base64`，
+  一次只取最早的一条，把任务的 `content` 还原为精确字节，按 `copies` 份数打印。
 - **回报**：成功 `POST .../jobs/<id>/done`，失败 `POST .../jobs/<id>/failed`。
 - 每个请求都带 `Authorization: Bearer <API_TOKEN>`。
 - 保留“最近 20 单去重”，避免在回报与轮询竞争时重复打印仍为 `pending` 的任务。
@@ -122,7 +145,7 @@ WebSocket 推送改为后台“WiFi 拉单”HTTP 模式，无需改动后台任
 详见 `main/http_client.c` 的解码部分。
 
 ### 硬件需求
-- ESP32-S3 开发板（**强烈建议带 PSRAM**，见下方“内存说明”）
+- ESP32-S3 开发板（**必须带 PSRAM**，见下方“内存说明”）
 - 局域网热敏打印机（开放 9100 端口）
 
 ### 如何配置
@@ -161,15 +184,17 @@ HTTPS 开箱即用（`sdkconfig.defaults` 已开启 `CONFIG_MBEDTLS_CERTIFICATE_
 | 方法 | 路径 | 请求体 | 成功 |
 |---|---|---|---|
 | POST | `/printer-api/heartbeat` | 无 | `{"success":true,"printerId","name"}` |
-| GET  | `/printer-api/jobs` | 无 | `{"success":true,"data":[ {id,content,copies,...} ]}` |
+| GET  | `/printer-api/jobs?limit=1&encoding=base64` | 无 | `{"success":true,"data":[ {id,content,contentEncoding,copies,...} ]}` |
 | POST | `/printer-api/jobs/:id/done` | 无 | `{"success":true}` |
 | POST | `/printer-api/jobs/:id/failed` | 无 | `{"success":true}` |
 
 鉴权错误：`401`（缺失/无效 Token），`403`（Token 对应打印机不是 `provider='wifi'`）。
 
 ### 不依赖后台的本地测试
-`test_server.py` 是实现同一契约的模拟后台。装了 Pillow 会渲染真正的中文光栅小票
-（`GS v 0`），否则回退为纯 ESC/POS 文本。
+`test_server.py` 是实现同一契约的模拟后台，同样支持 `?limit=`（默认 1、
+上限 20、非法值收敛到默认值）与 `?encoding=base64` 及对应的 `contentEncoding`
+字段——base64 主路径和 latin1 兜底路径都能在本地验证。装了 Pillow 会渲染出
+真实中文光栅小票（`GS v 0`），否则降级为纯 ESC/POS 文本。
 ```
 python3 test_server.py --port 3000 --token testtoken
 ```

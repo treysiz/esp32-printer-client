@@ -6,18 +6,29 @@ Reproduces the real backend's printer-api contract so you can test the
 firmware end-to-end WITHOUT the production server:
 
     POST /printer-api/heartbeat         -> {"success":true,"printerId","name"}
-    GET  /printer-api/jobs              -> {"success":true,"data":[ job, ... ]}
+    GET  /printer-api/jobs[?limit=&encoding=]
+                                        -> {"success":true,"data":[ job, ... ]}
     POST /printer-api/jobs/<id>/done    -> {"success":true}
     POST /printer-api/jobs/<id>/failed  -> {"success":true}
 
 Auth: every request must carry  Authorization: Bearer <API_TOKEN>
       (missing -> 401, wrong -> 401).
 
-`content` is encoded EXACTLY like the real backend: raw ESC/POS bytes are
-latin1-decoded to a string, then placed into JSON (served as UTF-8). That is
-what exercises the firmware's byte-exact latin1/UTF-8 decoder. With Pillow
-installed the mock renders a real GS v 0 raster receipt (Chinese included);
-otherwise it falls back to a plain ASCII ESC/POS text receipt.
+`content` is encoded EXACTLY like the real backend, in whichever of the two
+shapes the client asks for -- and every job reports which one it got via
+`contentEncoding`:
+
+    ?encoding=base64  -> content is base64 of the raw ESC/POS bytes (the shape
+                         the firmware asks for; ~4.2x smaller on the wire)
+    anything else     -> content is the raw bytes latin1-decoded to a string,
+                         then placed into JSON (served as UTF-8). Exercises the
+                         firmware's byte-exact latin1/UTF-8 fallback decoder.
+
+`?limit=N` returns at most N pending jobs, oldest first. Default 1, cap 20,
+illegal values fall back to the default (never a 400) -- same as production.
+
+With Pillow installed the mock renders a real GS v 0 raster receipt (Chinese
+included); otherwise it falls back to a plain ASCII ESC/POS text receipt.
 
 CJK strings below are written as \\uXXXX escapes so this source file stays
 pure ASCII (some editors truncate files at raw multibyte characters).
@@ -32,14 +43,21 @@ Firmware web UI:
 Press Enter in this console to queue a new job for the printer to pull.
 """
 import argparse
+import base64
+import itertools
 import json
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 API_TOKEN = "testtoken"
 
+DEFAULT_JOB_LIMIT = 1
+MAX_JOB_LIMIT = 20
+
 JOBS = {}            # id -> job dict (status: pending|printed|failed)
+SEQ = itertools.count()   # insertion order, so /jobs can answer oldest-first
 LOCK = threading.Lock()
 
 
@@ -135,17 +153,42 @@ def make_job(order_number, copies=1):
         "printerId": "mock-printer",
         "storeId": "mock-store",
         "orderNumber": order_number,
-        "content": payload.decode("latin1"),   # backend encoding
+        "raw": payload,            # kept as bytes; encoded per request
         "copies": copies,
         "status": "pending",
         "createdAt": "2026-06-04T21:44:00.000Z",
         "printedAt": None,
     }
     with LOCK:
+        job["seq"] = next(SEQ)
         JOBS[jid] = job
     print("[queued] order=%s id=%s %dB %s copies=%d"
           % (order_number, jid, len(payload), kind, copies))
     return job
+
+
+def serialize_job(job, encoding):
+    """Render a stored job into the wire shape for the requested encoding."""
+    if encoding == "base64":
+        content = base64.b64encode(job["raw"]).decode("ascii")
+    else:
+        encoding = "latin1"
+        content = job["raw"].decode("latin1")
+    out = {k: v for k, v in job.items() if k not in ("raw", "seq")}
+    out["content"] = content
+    out["contentEncoding"] = encoding
+    return out
+
+
+def parse_limit(qs):
+    """Default 1, cap 20, garbage falls back to the default (never a 400)."""
+    try:
+        n = int(qs.get("limit", [""])[0])
+    except (TypeError, ValueError):
+        return DEFAULT_JOB_LIMIT
+    if n < 1:
+        return DEFAULT_JOB_LIMIT
+    return min(n, MAX_JOB_LIMIT)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -171,13 +214,25 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path != "/printer-api/jobs":
+        u = urlparse(self.path)
+        if u.path != "/printer-api/jobs":
             return self._json(404, {"success": False, "error": "not found"})
         if not self._auth_ok():
             return
+
+        qs = parse_qs(u.query)
+        limit = parse_limit(qs)
+        encoding = qs.get("encoding", ["latin1"])[0]
+
         with LOCK:
-            pending = [j for j in JOBS.values() if j["status"] == "pending"]
-        self._json(200, {"success": True, "data": pending})
+            pending = sorted((j for j in JOBS.values() if j["status"] == "pending"),
+                             key=lambda j: j["seq"])[:limit]
+            data = [serialize_job(j, encoding) for j in pending]
+
+        body = {"success": True, "data": data}
+        print("[jobs] limit=%d encoding=%s -> %d job(s)"
+              % (limit, data[0]["contentEncoding"] if data else encoding, len(data)))
+        self._json(200, body)
 
     def do_POST(self):
         if not self._auth_ok():
