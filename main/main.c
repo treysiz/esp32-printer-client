@@ -146,16 +146,31 @@ void app_main(void)
 
         ESP_ERROR_CHECK(printer_task_start(order_queue, result_queue));
 
-        if (wifi_mgr_is_connected()) {
-            /* Non-fatal: if the client can't start (e.g. out of RAM for the
-             * response buffer), keep the web config UI alive so the user can
-             * still reconfigure rather than crash-looping. */
-            esp_err_t hc_err = http_client_task_start(order_queue, result_queue);
-            if (hc_err != ESP_OK) {
-                ESP_LOGE(TAG, "HTTP client failed to start: %s",
-                         esp_err_to_name(hc_err));
-            }
+        /*
+         * ⚠⚠ 这里**不能**加 `if (wifi_mgr_is_connected())`。
+         *
+         * 原来加了，后果是一个「一切看着正常、什么都不工作」的静默故障：
+         * 上面 wifi_mgr_start_apsta(8000) 只等 8 秒，而实测这块板两次开机
+         * 拿到 IP 分别在 12.2s / 12.7s —— **都超时**。于是拉单任务压根没起，
+         * 此后也没人补启（WiFi 几秒后连上了也没用）。
+         *
+         * 表现：网页显示 WiFi 已连接、有 IP、手点「测试后台连接」还成功
+         * （那是一次性内联请求，不走这个任务）—— 但**永远不会拉单**。
+         * 而且它取决于 WiFi 关联快慢 ⇒ 时好时坏，最难查的那一种。
+         *
+         * 拉单任务自带重试和 online 标志，离线启动完全没问题：
+         * 连不上就退避重试，WiFi 一好自己恢复。⇒ 无条件启动。
+         *
+         * 非致命：万一起不来（比如没内存分响应缓冲），保住网页 UI 让人还能改配置，
+         * 别 crash-loop。但**必须让人看得见** —— 状态里加一条 poller_running。
+         */
+        esp_err_t hc_err = http_client_task_start(order_queue, result_queue);
+        if (hc_err != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP client failed to start: %s", esp_err_to_name(hc_err));
+        } else {
+            ESP_LOGI(TAG, "HTTP client (order poller) started");
         }
+        web_config_set_poller_running(hc_err == ESP_OK);
 
         ESP_ERROR_CHECK(web_config_server_start(
             wifi_mgr_is_connected() ? WEB_CONFIG_MODE_STA : WEB_CONFIG_MODE_AP,
