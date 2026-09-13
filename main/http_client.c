@@ -523,6 +523,49 @@ int http_client_test_backend(const char *base_url, const char *token,
     return status;
 }
 
+/*
+ * ── 给网页「今日订单 / 补打」用的两个后端调用 ─────────────────────────────
+ *
+ * ★★ 故意**只做这两个具体函数，不做通用代理**。
+ *   通用的 "把网页给的 path 转发到后端" 看着更省事，但那等于把打印机的
+ *   Bearer token 借给局域网里任何人去打后端**任意**接口。
+ *   这两个函数把 path 写死在固件里，网页只能触发这两件事。
+ *
+ * ⚠ 复用 http_do() 那把互斥锁：拉单任务随时可能在发请求，
+ *   两条 TLS 连接同时开会把内存吃穿（尤其响应缓冲已经占了 256 KB）。
+ */
+
+int http_client_fetch_today_orders(char *resp, int resp_cap, int *resp_len)
+{
+    const device_config_t *cfg = config_get();
+    if (!base_url_is_configured(cfg->server_url) || cfg->api_token[0] == '\0') return -1;
+    return http_do(HTTP_METHOD_GET, "/printer-api/orders/today",
+                   resp, resp_cap, resp_len, NULL);
+}
+
+int http_client_reprint_order(const char *order_id, char *resp, int resp_cap)
+{
+    const device_config_t *cfg = config_get();
+    if (!base_url_is_configured(cfg->server_url) || cfg->api_token[0] == '\0') return -1;
+    if (!order_id || order_id[0] == '\0') return -1;
+
+    /* ★ 只允许 UUID 字符。不校验的话，网页传个 "../../admin/xxx" 就能拿着
+     *   打印机 token 打到别的接口上去 —— path 是我们拼的，注入点就在这里。 */
+    for (const char *p = order_id; *p; p++) {
+        const bool ok = (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')
+                     || (*p >= 'A' && *p <= 'F') || *p == '-';
+        if (!ok) {
+            ESP_LOGW(TAG, "reprint: rejected order_id with illegal char");
+            return -1;
+        }
+    }
+    if (strlen(order_id) > 40) return -1;   /* UUID 是 36 位，留点余量 */
+
+    char path[80];
+    snprintf(path, sizeof(path), "/printer-api/orders/%s/reprint", order_id);
+    return http_do(HTTP_METHOD_POST, path, resp, resp_cap, NULL, NULL);
+}
+
 /* Map a status code to online/auth state; log auth problems clearly. */
 static bool status_is_ok(int status, const char *what)
 {

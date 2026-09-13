@@ -65,6 +65,27 @@ bool http_client_is_connected(void);
 int http_client_test_backend(const char *base_url, const char *token,
                              char *err, size_t err_len);
 
+/**
+ * @brief 拉本营业日的订单列表（给网页上的「补打」列表用），响应体原样写进 resp。
+ *
+ * 打的是 GET <base>/printer-api/orders/today —— 那个接口**不返回小票内容**，
+ * 只有认单要用的字段，所以几十 KB 足够（一张真小票是 137-210 KB）。
+ *
+ * @return HTTP 状态码；传输失败返回 -1。
+ */
+int http_client_fetch_today_orders(char *resp, int resp_cap, int *resp_len);
+
+/**
+ * @brief 补打一单：POST <base>/printer-api/orders/<id>/reprint
+ *
+ * 票顶的「补打 REPRINT」横幅由**服务端**强制加上，板子无从跳过。
+ *
+ * @param order_id  订单 UUID。调用方必须先校验字符集（只允许 [0-9a-fA-F-]），
+ *                  否则等于让局域网里任何人往后端拼任意路径。
+ * @return HTTP 状态码；传输失败返回 -1。
+ */
+int http_client_reprint_order(const char *order_id, char *resp, int resp_cap);
+
 #ifdef __cplusplus
 }
 #endif

@@ -91,6 +91,15 @@ static const char *html_page =
 "  <div class='info-row'><span id='t_ver'>固件版本:</span><strong id='v_ver'>-</strong></div>"
 "  <div class='info-row'><span id='t_uptime'>运行时长:</span><strong id='v_up'>-</strong></div>"
 "</div>"
+/* ── 今日订单 / 补打 ──────────────────────────────────────────────────
+   用户 2026-09-13：员工在这里点一下就能补单，不用跑去登后台。
+   ⚠ 单号/时间/金额全部来自后端 —— 板子不缓存、不自己数号，
+     「每天从 1 开始」的真值源在后端 store_order_sequences。*/
+"<div class='card'>"
+"  <h3 id='t_orders'>今日订单</h3>"
+"  <button type='button' class='btn btn-gray' id='t_btn_orders' onclick='loadOrders()'>刷新列表</button>"
+"  <div id='orders_box' style='margin-top:10px;font-size:14px'></div>"
+"</div>"
 "<div class='card' id='setup-form'>"
 "  <h3 id='t_cfg_title'>配置向导</h3>"
 "  <div class='step'>"
@@ -138,10 +147,57 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', surl_hint:'生产：https://域名（不要带端口）  本地开发：http://IP:3000', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', surl_hint:'Production: https://domain (no port).  Dev only: http://IP:3000', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', orders:'今日订单', btn_orders:'刷新列表', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', surl_hint:'生产：https://域名（不要带端口）  本地开发：http://IP:3000', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', orders:'Today Orders', btn_orders:'Refresh', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', surl_hint:'Production: https://domain (no port).  Dev only: http://IP:3000', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
+/* 今日订单：拉列表 + 逐行补打。
+   ★ 用 DOM API 逐个建元素，不拼 HTML 字符串：
+     ① 这段 JS 嵌在 C 字符串里，每多一层引号就多一个出错点
+     ② textContent 天然免疫注入（客人姓名里带 < 也不会出事）
+   ★ 补打按钮点下去立刻禁用 —— 员工手快连点两下会真打出两张。*/
+"async function loadOrders() {"
+"  var box=document.getElementById('orders_box');"
+"  var btn=document.getElementById('t_btn_orders'); var o=btn.innerText;"
+"  btn.disabled=true; btn.innerText=(lang==='zh'?'读取中...':'Loading...');"
+"  box.textContent='';"
+"  try {"
+"    var r=await fetch('/api/orders_today'); var d=await r.json();"
+"    if(!d.success){ box.textContent=(lang==='zh'?'读取失败':'Failed')+(d.status?(' HTTP '+d.status):''); box.style.color='#dc3545'; }"
+"    else if(!d.data||!d.data.length){ box.textContent=(lang==='zh'?'今天还没有订单':'No orders today'); box.style.color='#666'; }"
+"    else { box.style.color=''; d.data.forEach(function(x){ box.appendChild(orderRow(x)); }); }"
+"  } catch(e){ box.textContent=(lang==='zh'?'请求失败':'Request failed'); box.style.color='#dc3545'; }"
+"  btn.disabled=false; btn.innerText=o;"
+"}"
+"function orderRow(x) {"
+"  var row=document.createElement('div');"
+"  row.style.cssText='border-bottom:1px solid #eee;padding:8px 0;display:flex;align-items:center;gap:10px';"
+"  var left=document.createElement('div'); left.style.cssText='flex:1;min-width:0';"
+"  var head=document.createElement('div');"
+"  var num=document.createElement('b'); num.textContent=x.orderNumber||'';"
+"  head.appendChild(num);"
+"  var t=x.createdAt?new Date(x.createdAt).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'';"
+"  head.appendChild(document.createTextNode(' · '+t+' · $'+(x.total||'')));"
+"  left.appendChild(head);"
+"  var who=[x.customerName,x.customerPhone].filter(Boolean).join(' · ');"
+"  if(who){ var w=document.createElement('div'); w.style.cssText='color:#666;font-size:12px'; w.textContent=who; left.appendChild(w); }"
+"  if(x.deliveryAddress){ var a=document.createElement('div'); a.style.cssText='color:#666;font-size:12px'; a.textContent=x.deliveryAddress; left.appendChild(a); }"
+"  row.appendChild(left);"
+"  var b=document.createElement('button'); b.type='button'; b.className='scan-btn';"
+"  b.textContent=(lang==='zh'?'补打':'Reprint');"
+"  b.onclick=function(){ reprint(b, x.id); };"
+"  row.appendChild(b);"
+"  return row;"
+"}"
+"async function reprint(btn,id) {"
+"  btn.disabled=true; btn.textContent=(lang==='zh'?'打印中':'...');"
+"  try {"
+"    var r=await fetch('/api/reprint',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})});"
+"    var d=await r.json();"
+"    btn.textContent = d.success ? (lang==='zh'?'已补打':'Sent') : (lang==='zh'?'失败':'Failed');"
+"    if(!d.success) btn.disabled=false;"
+"  } catch(e){ btn.textContent=(lang==='zh'?'失败':'Failed'); btn.disabled=false; }"
+"}"
 "function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
 "let currentStatus = null;"
 "function renderStatus() {"
@@ -327,6 +383,90 @@ static esp_err_t get_index_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/*
+ * ── 今日订单 / 补打 ──────────────────────────────────────────────────
+ *
+ * 用户 2026-09-13：员工在打印盒网页上直接补单，不用跑去登后台。
+ *
+ * ★ 网页**不直接连后端** —— 那样 Bearer token 得发给浏览器，而且跨域。
+ *   这里由固件转发：token 留在设备里，网页只知道两个本地接口。
+ *
+ * ★ 板子**不缓存**订单列表，每次点刷新都回后端要。
+ *   理由：订单号「每天从 1 开始」的真值源在后端（store_order_sequences），
+ *   板子自己存一份必然会在跨营业日/断电/重启时和后端对不上。
+ *   —— 这一条是设计约束，别为了「快一点」加缓存。
+ */
+
+/* 今日订单列表大小：后端上限 200 单 × 每单约 150 字节，48 KB 绰绰有余。
+   ⚠ 这里**不会**出现小票内容（那是 137-210 KB/张）—— 后端那个接口只给字段。*/
+#define TODAY_ORDERS_BUF  (48 * 1024)
+
+static esp_err_t get_orders_today_handler(httpd_req_t *req)
+{
+    char *buf = malloc(TODAY_ORDERS_BUF);
+    if (!buf) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"success\":false,\"error\":\"no_memory\"}");
+        return ESP_OK;
+    }
+    int len = 0;
+    int status = http_client_fetch_today_orders(buf, TODAY_ORDERS_BUF - 1, &len);
+
+    httpd_resp_set_type(req, "application/json");
+    if (status == 200 && len > 0) {
+        buf[len] = 0;
+        httpd_resp_sendstr(req, buf);      /* 后端 JSON 原样透传 */
+    } else {
+        /* ★ 把后端状态码带出去 —— 不然网页只能说"失败"，跟固件那次
+         *   "连不上后台/检查WiFi" 一样把人往错方向引。 */
+        char err[96];
+        snprintf(err, sizeof(err),
+                 "{\"success\":false,\"error\":\"backend\",\"status\":%d}", status);
+        httpd_resp_sendstr(req, err);
+    }
+    free(buf);
+    return ESP_OK;
+}
+
+static esp_err_t post_reprint_handler(httpd_req_t *req)
+{
+    char body[200];
+    int total = req->content_len;
+    if (total <= 0 || total >= (int)sizeof(body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Bad length");
+        return ESP_OK;
+    }
+    int rec = 0, r;
+    while (rec < total) {
+        r = httpd_req_recv(req, body + rec, total - rec);
+        if (r <= 0) { if (r == HTTPD_SOCK_ERR_TIMEOUT) continue; return ESP_FAIL; }
+        rec += r;
+    }
+    body[rec] = 0;
+
+    cJSON *root = cJSON_Parse(body);
+    if (!root) { httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON"); return ESP_OK; }
+    cJSON *it = cJSON_GetObjectItem(root, "id");
+    char id[48] = {0};
+    if (it && cJSON_IsString(it)) strncpy(id, it->valuestring, sizeof(id) - 1);
+    cJSON_Delete(root);
+
+    char resp[256] = {0};
+    /* 字符集校验在 http_client_reprint_order 里做（path 是那边拼的，
+       注入点也在那边）—— 这里只管取参数。 */
+    int status = http_client_reprint_order(id, resp, sizeof(resp) - 1);
+
+    httpd_resp_set_type(req, "application/json");
+    if (status == 200) {
+        httpd_resp_sendstr(req, resp[0] ? resp : "{\"success\":true}");
+    } else {
+        char err[96];
+        snprintf(err, sizeof(err),
+                 "{\"success\":false,\"error\":\"backend\",\"status\":%d}", status);
+        httpd_resp_sendstr(req, err);
+    }
+    return ESP_OK;
+}
 /* GET /api/status */
 static esp_err_t get_status_handler(httpd_req_t *req)
 {
@@ -717,6 +857,22 @@ esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_qu
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &uri_post_save);
+
+        httpd_uri_t uri_get_orders_today = {
+            .uri      = "/api/orders_today",
+            .method   = HTTP_GET,
+            .handler  = get_orders_today_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &uri_get_orders_today);
+
+        httpd_uri_t uri_post_reprint = {
+            .uri      = "/api/reprint",
+            .method   = HTTP_POST,
+            .handler  = post_reprint_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &uri_post_reprint);
 
         httpd_uri_t uri_post_test_print = {
             .uri      = "/api/test_print",
