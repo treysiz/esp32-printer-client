@@ -109,7 +109,12 @@ static const char *html_page =
 "  </div>"
 "  <div class='step'>"
 "    <h4 id='t_step3'>第三步：连接后台 (WiFi 拉单)</h4>"
-"    <div class='group'><label id='t_surl'>后台地址</label><input type='text' id='server_url' placeholder='http://192.168.1.50:3000'></div>"
+/* ⚠ 占位符用**生产**写法。原来写的是 dev 那种 `http://IP:3000`，
+ *   等于在引导人往 https 地址上也加端口 —— 2026-09-13 真配错过一次
+ *   （填成 https://app.zhifood.com:3000，3000 不对外开 ⇒ 连不上）。 */
+"    <div class='group'><label id='t_surl'>后台地址</label><input type='text' id='server_url' placeholder='https://app.example.com'>"
+/* ⚠ setLang 用 innerText 覆盖，别放 HTML 标签 —— 会被抹掉。文案走下面的词典。 */
+"      <div style='font-size:12px;color:#6c757d;margin-top:4px' id='t_surl_hint'></div></div>"
 "    <div class='group'><label id='t_tok'>API Token</label><input type='text' id='api_token' placeholder='后台新增 WiFi 打印机时生成'></div>"
 "    <button type='button' class='btn btn-gray' id='t_btn_bktry' onclick='tryBackend()' style='margin-top:8px'>测试后台连接</button>"
 "    <div id='backend_st_box' style='background:#f0f7ff;padding:10px;border-radius:6px;margin-top:8px;font-size:13px'></div>"
@@ -129,8 +134,8 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', surl_hint:'生产：https://域名（不要带端口）  本地开发：http://IP:3000', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', surl_hint:'Production: https://domain (no port).  Dev only: http://IP:3000', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
 "function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
@@ -243,7 +248,7 @@ static const char *html_page =
 "    const r=await fetch('/api/backend_try',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url,token:tok})});"
 "    const d=await r.json();"
 "    if(d.ok){ box.innerHTML='<span style=\\'color:green\\'>\\u2713 '+(lang==='zh'?'后台连接成功（在线）':'Backend OK (online)')+'</span>'; }"
-"    else{ const m={bad_token:(lang==='zh'?'Token 错误或未激活':'Invalid token'),not_wifi_provider:(lang==='zh'?'该打印机不是“WiFi 拉单”类型':'Printer is not WiFi-pull'),unreachable:(lang==='zh'?'连不上后台（检查地址/同网/防火墙/先连好WiFi）':'Unreachable'),bad_url:(lang==='zh'?'地址格式错（需 http:// 开头）':'Bad URL'),no_token:(lang==='zh'?'未填 Token':'No token')}; box.innerHTML='<span style=\\'color:#dc3545\\'>\\u2717 '+(lang==='zh'?'失败: ':'Failed: ')+(m[d.error]||d.error||('HTTP '+d.status))+'</span>'; }"
+"    else{ const m={bad_token:(lang==='zh'?'Token 错误或未激活':'Invalid token'),not_wifi_provider:(lang==='zh'?'该打印机不是“WiFi 拉单”类型':'Printer is not WiFi-pull'),unreachable:(lang==='zh'?'连不上后台（检查地址/同网/防火墙/先连好WiFi）':'Unreachable'),https_port:(lang==='zh'?'连不上：https 地址不要带端口。生产填 https://域名，:3000 那种写法只在本地开发用':'Unreachable: drop the port from an https:// URL. Production is https://domain — the :3000 form is dev-only'),bad_url:(lang==='zh'?'地址格式错（需 http:// 开头）':'Bad URL'),no_token:(lang==='zh'?'未填 Token':'No token')}; box.innerHTML='<span style=\\'color:#dc3545\\'>\\u2717 '+(lang==='zh'?'失败: ':'Failed: ')+(m[d.error]||d.error||('HTTP '+d.status))+'</span>'; }"
 "  }catch(e){ box.innerHTML='<span style=\\'color:#dc3545\\'>'+(lang==='zh'?'请求失败，请重试':'Request failed')+'</span>'; }"
 "  btn.disabled=false; btn.innerText=o;"
 "}"
