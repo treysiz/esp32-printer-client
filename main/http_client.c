@@ -121,6 +121,34 @@ static bool base_url_is_configured(const char *url)
     return strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0;
 }
 
+/*
+ * True when the URL is https:// **with an explicit port that is not 443**.
+ *
+ * Why this exists (2026-09-13, real setup session): the backend address had been
+ * typed as `https://app.zhifood.com:3000` — a mash-up of the two forms that
+ * config.h prints side by side:
+ *      dev         http://<server>:3000
+ *      production  https://<domain>          <- 443 implied, no port at all
+ *
+ * In production only the reverse proxy's 80/443 are reachable from outside;
+ * 3000 lives inside the container network. So the TCP connect just hangs and
+ * the UI says "unreachable" — which sends you off checking WiFi, the LAN and
+ * the firewall, none of which is the problem.
+ *
+ * ⚠ Deliberately NOT a hard block: someone may legitimately front the backend
+ *   on a non-standard TLS port. This only *explains a failure that already
+ *   happened* — if the odd port works, nothing is ever said.
+ */
+static bool https_url_has_explicit_port(const char *url)
+{
+    if (!url || strncmp(url, "https://", 8) != 0) return false;
+    const char *host  = url + 8;
+    const char *slash = strchr(host, '/');
+    const char *colon = strchr(host, ':');
+    if (!colon || (slash && colon > slash)) return false;   /* no port given */
+    return atoi(colon + 1) != 443;
+}
+
 /* ── Dedup helpers ──────────────────────────────────────────────────── */
 static bool is_duplicate_order(const char *order_id)
 {
@@ -472,7 +500,12 @@ int http_client_test_backend(const char *base_url, const char *token,
             ESP_LOGI(TAG, "test_backend %s -> HTTP %d", url, status);
         } else {
             ESP_LOGW(TAG, "test_backend %s transport error: %s", url, esp_err_to_name(e));
-            if (err && err_len) snprintf(err, err_len, "unreachable");
+            /* ★ 连不上 + https 带了非 443 端口 = 十有八九把 dev 和生产的写法拼在了一起。
+             *   报一个专用错误码，别让人去查 WiFi / 防火墙（那三样都没问题）。 */
+            if (err && err_len) {
+                snprintf(err, err_len, "%s",
+                         https_url_has_explicit_port(base_url) ? "https_port" : "unreachable");
+            }
         }
         esp_http_client_cleanup(cl);
     } else if (err && err_len) {
