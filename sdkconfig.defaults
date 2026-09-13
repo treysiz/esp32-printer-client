@@ -27,18 +27,26 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_INSECURE=n
 
 # ── SPI RAM (PSRAM) — OPTIONAL ───────────────────────────────────────────
-# The code (big_malloc) automatically uses PSRAM for the HTTP response +
-# decoded receipt buffers when present, and falls back to internal RAM
-# otherwise. The 48 KB default buffer fits internal RAM on the ESP32-S3, so
-# PSRAM is only needed for very large 80mm receipts. If your module HAS PSRAM,
-# enable it below — but pick the MODE that matches your module (QUAD vs OCT),
-# as a wrong mode can stop the board from booting:
-#   CONFIG_SPIRAM=y
-#   CONFIG_SPIRAM_USE_MALLOC=y
-#   # then EITHER (most N8R8/N16R8 octal modules):
-#   #   CONFIG_SPIRAM_MODE_OCT=y
-#   # OR (quad-PSRAM modules):
-#   #   CONFIG_SPIRAM_MODE_QUAD=y
+# ⚠⚠ 这一节原来标着 "OPTIONAL" 且默认没开 —— **那是错的**。实测后果：
+#     心跳正常、测打印正常、**真订单小票收不下** ⇒ 订单进、票不出、日志全绿。
+#     （2026-09-13 上云配打印机时查出来的，第一单真来了才会暴露。）
+#
+# 为什么必须开：轮询用 ?limit=1&encoding=base64，535 张真实小票实测
+#   base64 响应中位数 ~137 KB、上限 ~210 KB（见 http_client.c 顶部注释）。
+#   没有 PSRAM 时缓冲被压到 HTTP_RESP_INTERNAL_MAX = 48 KB
+#   （内部 RAM 开大了会饿死 TLS 握手 → -0x7F00），根本装不下。
+#   http_client.c 里那句写得很清楚：
+#     "A board without PSRAM can reach the backend but cannot receive a real receipt."
+#
+# ⚠ MODE 必须和模组对上（选错开不了机）。**换模组前先跑一次**：
+#     esptool --chip esp32s3 -p COM3 flash_id
+#   这块板报的是 "Embedded PSRAM 8MB (AP_3v3)" ⇒ N8R8/N16R8 那一类，octal。
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+# 小块仍走内部 RAM（更快）；只有 big_malloc 那种大块才落 PSRAM
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 
 # ── NVS ─────────────────────────────────────────────────────────────────
 CONFIG_NVS_ENCRYPTION=n

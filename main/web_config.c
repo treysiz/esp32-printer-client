@@ -28,6 +28,10 @@ static web_config_mode_t s_mode;
 static QueueHandle_t s_order_queue = NULL;
 static bool s_printer_checked = false;
 static bool s_printer_reachable = false;
+/* 拉单任务起没起 —— 由 main.c 在启动后告知，供 /api/status 如实上报 */
+static bool s_poller_running = false;
+
+void web_config_set_poller_running(bool running) { s_poller_running = running; }
 
 /* ── HTML Content ───────────────────────────────────────────────────── */
 static const char *html_page = 
@@ -329,10 +333,18 @@ static esp_err_t get_status_handler(httpd_req_t *req)
     const device_config_t *cfg = config_get();
     cJSON *root = cJSON_CreateObject();
     
-    cJSON_AddStringToObject(root, "mode", s_mode == WEB_CONFIG_MODE_AP ? "ap" : "sta");
+    /* ⚠ 用**实时** WiFi 状态，不是 s_mode 那个开机瞬间的快照。
+     *   快照会一直说 "ap"，而设备其实早就连上店里 WiFi 了 —— 排查时极其误导
+     *   （2026-09-13：我就是先看到 mode=ap 才顺藤摸到真正的 bug）。
+     *   s_mode 保留给 web_config_server_start 决定 UI 形态，不再对外报。 */
+    cJSON_AddStringToObject(root, "mode", wifi_mgr_is_connected() ? "sta" : "ap");
     cJSON_AddBoolToObject(root, "wifi_connected", wifi_mgr_is_connected());
     /* "ws_connected" key kept for UI compatibility; now means backend online. */
     cJSON_AddBoolToObject(root, "ws_connected", http_client_is_connected());
+    /* ★ 拉单任务到底起没起 —— 以前它可能被静默跳过而外面完全看不出来。
+     *   ws_connected 顶不上：那只说明"上次请求通了"，任务没起时它恒 false，
+     *   和"后台挂了"长得一模一样。 */
+    cJSON_AddBoolToObject(root, "poller_running", s_poller_running);
     cJSON_AddBoolToObject(root, "printer_checked", s_printer_checked);
     cJSON_AddBoolToObject(root, "printer_reachable", s_printer_reachable);
 

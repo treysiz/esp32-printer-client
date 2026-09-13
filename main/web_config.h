@@ -32,6 +32,10 @@ typedef enum {
  */
 esp_err_t web_config_server_start(web_config_mode_t mode, QueueHandle_t order_queue);
 
+/* main.c 启动拉单任务后调用，让 /api/status 能如实报 poller_running。
+ * ⚠ 这一位存在的理由：拉单任务曾被一个 if 静默跳过，而外面完全看不出来。 */
+void web_config_set_poller_running(bool running);
+
 #ifdef __cplusplus
 }
 #endif
