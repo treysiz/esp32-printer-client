@@ -70,6 +70,15 @@ static const char *html_page =
 ".ssid-row select { flex:1; min-width:0; padding:12px; border:1px solid #ddd; border-radius:6px; font-size:16px; background:#fafafa; }"
 ".scan-btn { flex:0 0 92px; padding:0 10px; border:1px solid #ccc; border-radius:6px; background:#fff; color:#333; font-size:15px; font-weight:700; cursor:pointer; white-space:nowrap; }"
 ".scan-btn:disabled { opacity:.75; cursor:wait; background:#eee; }"
+/* 锁定态：灰底 + 禁用光标，一眼看得出"这块现在不能改"。
+   ⚠ 用 readonly 不用 disabled —— disabled 的字段**不会被提交**，
+     而保存 handler 是从零拼配置的，字段没传就等于清零，
+     锁反而会把后台地址抹掉（正好是它要保护的东西）。*/
+".locked input { background:#e9ecef; color:#666; cursor:not-allowed; }"
+".lockbar { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:10px;"
+"           background:#fff8e1; border:1px solid #ffe0a3; border-radius:6px; padding:8px 10px; }"
+".lockbar button { flex:0 0 auto; padding:4px 12px; border:1px solid #ccc; border-radius:5px;"
+"                  background:#fff; font-size:13px; cursor:pointer; }"
 "</style></head><body>"
 "<div class='card'>"
 "  <div class='lang-switch'><span onclick='setLang(\"zh\")'>中文</span> | <span onclick='setLang(\"en\")'>EN</span></div>"
@@ -115,13 +124,19 @@ static const char *html_page =
 "    <button type='button' class='btn btn-gray' id='t_btn_wifitry' onclick='tryWifi()' style='margin-top:8px'>测试连接</button>"
 "    <div id='wifi_st_box' style='background:#f0f7ff;padding:10px;border-radius:6px;margin-top:8px;font-size:13px'></div>"
 "  </div>"
-"  <div class='step'>"
+"  <div class='step' id='step2box'>"
 "    <h4 id='t_step2'>第二步：连接打印机</h4>"
+/* 锁提示条：第二/三步共用同一个状态，点哪个都一样。
+   放两处是为了"在看的地方就能看见"，不是两把独立的锁。*/
+"    <div class='lockbar' id='lockbar2'><span id='t_lockmsg2'></span>"
+"      <button type='button' onclick='toggleLock()' id='t_lockbtn2'></button></div>"
 "    <div class='group'><label id='t_pip'>打印机 IP</label><input type='text' id='printer_ip'></div>"
 "    <div class='group'><label id='t_pport'>打印机端口 (默认9100)</label><input type='number' id='printer_port'></div>"
 "  </div>"
-"  <div class='step'>"
+"  <div class='step' id='step3box'>"
 "    <h4 id='t_step3'>第三步：连接后台 (WiFi 拉单)</h4>"
+"    <div class='lockbar' id='lockbar3'><span id='t_lockmsg3'></span>"
+"      <button type='button' onclick='toggleLock()' id='t_lockbtn3'></button></div>"
 /* ⚠ 占位符用**生产**写法。原来写的是 dev 那种 `http://IP:3000`，
  *   等于在引导人往 https 地址上也加端口 —— 2026-09-13 真配错过一次
  *   （填成 https://app.zhifood.com:3000，3000 不对外开 ⇒ 连不上）。 */
@@ -147,8 +162,8 @@ static const char *html_page =
 "</div>"
 "<script>"
 "const dict = {"
-"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', orders:'今日订单', btn_orders:'刷新列表', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', surl_hint:'生产：https://域名（不要带端口）  本地开发：http://IP:3000', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
-"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', orders:'Today Orders', btn_orders:'Refresh', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', surl_hint:'Production: https://domain (no port).  Dev only: http://IP:3000', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
+"  zh: { title:'PrinterBox 打印盒设置', st_wifi:'WiFi状态', st_cloud:'后台状态', st_printer:'打印机连通', st_ip:'局域网IP', btn_test_net:'测网络', btn_test_print:'测打印', btn_wifitry:'测试连接', btn_bktry:'测试后台连接', cfg_title:'配置向导', info:'设备信息', orders:'今日订单', btn_orders:'刷新列表', ver:'固件版本:', uptime:'运行时长:', step1:'第一步：连接店内 WiFi', ssid:'WiFi 名称', pass:'WiFi 密码 (为空则不修改)', step2:'第二步：连接打印机', lock_on:'已锁定 · 装机时设好的，平时别动', lock_off:'⚠ 已解锁 —— 改错会收不到订单或打不出票', lock_unlock:'解锁', lock_lock:'锁上', lock_confirm:'这些是装机时设好的。改错会导致收不到订单、或者打不出小票。确定要解锁吗？', pip:'打印机 IP', pport:'打印机端口', step3:'第三步：连接后台 (WiFi 拉单)', surl:'后台地址', surl_hint:'生产：https://域名（不要带端口）  本地开发：http://IP:3000', tok:'API Token (为空则不修改)', adv_toggle:'展开高级设置 (固定IP)', use_static:'使用固定 IP', btn_save:'保存并重启', btn_reset:'恢复出厂设置', msg_reset:'确定要清空所有设置并恢复出厂吗？', msg_reset_ok:'已清空，设备正在重启...' },"
+"  en: { title:'PrinterBox Settings', st_wifi:'WiFi Status', st_cloud:'Backend Status', st_printer:'Printer Link', st_ip:'LAN IP', btn_test_net:'Test Net', btn_test_print:'Test Print', btn_wifitry:'Test Connect', btn_bktry:'Test Backend', cfg_title:'Setup Wizard', info:'Device Info', orders:'Today Orders', btn_orders:'Refresh', ver:'Firmware:', uptime:'Uptime:', step1:'Step 1: Connect WiFi', ssid:'WiFi Name', pass:'WiFi Password (leave blank to keep)', step2:'Step 2: Connect Printer', lock_on:'🔒 Locked - set at install, leave alone', lock_off:'⚠ Unlocked - wrong values break orders or printing', lock_unlock:'Unlock', lock_lock:'Lock', lock_confirm:'These were set at install. Wrong values stop orders coming in, or stop receipts printing. Unlock anyway?', pip:'Printer IP', pport:'Printer Port', step3:'Step 3: Connect Backend (WiFi Pull)', surl:'Backend URL', surl_hint:'Production: https://domain (no port).  Dev only: http://IP:3000', tok:'API Token (leave blank to keep)', adv_toggle:'Advanced Settings (Static IP)', use_static:'Use Static IP', btn_save:'Save & Reboot', btn_reset:'Factory Reset', msg_reset:'Erase all settings and factory reset?', msg_reset_ok:'Erased! Rebooting...' }"
 "};"
 "let lang = 'zh';"
 /* 今日订单：拉列表 + 逐行补打。
@@ -198,7 +213,40 @@ static const char *html_page =
 "    if(!d.success) btn.disabled=false;"
 "  } catch(e){ btn.textContent=(lang==='zh'?'失败':'Failed'); btn.disabled=false; }"
 "}"
-"function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; renderStatus(); }"
+/* ── 第二/三步的锁 ────────────────────────────────────────────────────
+   用户 2026-09-13：「加个按钮锁，以防老板们误删」。
+   打印机 IP / 端口 / 后台地址 / API Token 都是装机时设一次的东西，
+   而 WiFi 密码是真会变的 —— 所以第一步不锁。
+
+   ★ **每次打开页面都是锁上的**，不做持久化。
+     locked 是默认状态，就没有"上次忘了锁"这种情况。
+   ★ 用 readOnly 不用 disabled：disabled 的字段不会被提交，
+     而保存 handler 省略即清零 —— 锁反而会抹掉它要保护的值。*/
+"var locked = true;"
+"var LOCK_FIELDS = ['printer_ip','printer_port','server_url','api_token'];"
+"function applyLock() {"
+"  LOCK_FIELDS.forEach(function(id){ var el=document.getElementById(id); if(el) el.readOnly=locked; });"
+"  ['step2box','step3box'].forEach(function(id){"
+"    var el=document.getElementById(id); if(el) el.classList.toggle('locked', locked); });"
+"  var msg = locked ? (dict[lang].lock_on) : (dict[lang].lock_off);"
+"  var btn = locked ? (dict[lang].lock_unlock) : (dict[lang].lock_lock);"
+"  ['2','3'].forEach(function(n){"
+/* \u26A0 \u8FD9\u91CC**\u4E0D\u8981\u653E\u8868\u60C5**\uFF0C\u6587\u6848\u5168\u8D70\u8BCD\u5178\uFF08lock_on / lock_off\uFF09\u3002
+   \u8FD9\u6BB5 JS \u662F\u5D4C\u5728 C \u5B57\u7B26\u4E32\u91CC\u7684\uFF1AJS \u7684\u4EE3\u7406\u5BF9\u8F6C\u4E49\u5199\u6CD5\uFF08\u53CD\u659C\u6760 u D83D \u90A3\u79CD\uFF09
+   \u4F1A\u88AB C \u7F16\u8BD1\u5668\u5F53\u6210\u5B83\u81EA\u5DF1\u7684\u300C\u901A\u7528\u5B57\u7B26\u540D\u300D\uFF0C\u800C\u534A\u4E2A\u4EE3\u7406\u7801\u4F4D\u5728 C \u91CC\u975E\u6CD5\uFF0C
+   \u76F4\u63A5\u7F16\u8BD1\u62A5\u9519 "is not a valid universal character"\u3002
+   \u2014\u2014 \u9501\u7684\u8FA8\u8BC6\u5EA6\u9760\u5F69\u8272\u63D0\u793A\u6761 + \u6587\u5B57\uFF0C\u672C\u6765\u4E5F\u4E0D\u9700\u8981\u56FE\u6807\u3002*/
+"    var m=document.getElementById('t_lockmsg'+n); if(m) m.textContent=msg;"
+"    var b=document.getElementById('t_lockbtn'+n); if(b) b.textContent=btn;"
+"    var bar=document.getElementById('lockbar'+n);"
+"    if(bar){ bar.style.background = locked?'#fff8e1':'#fdecea'; bar.style.borderColor = locked?'#ffe0a3':'#f5c2c7'; }"
+"  });"
+"}"
+"function toggleLock() {"
+"  if (locked && !confirm(dict[lang].lock_confirm)) return;"
+"  locked = !locked; applyLock();"
+"}"
+"function setLang(l) { lang = l; for(let k in dict[l]) { let el = document.getElementById('t_'+k); if(el) el.innerText = dict[l][k]; } document.getElementById('wifi_pass').placeholder = dict[l].pass; applyLock(); renderStatus(); }"
 "let currentStatus = null;"
 "function renderStatus() {"
 "  if(!currentStatus) return;"
@@ -583,8 +631,24 @@ static esp_err_t post_save_handler(httpd_req_t *req)
         }
     }
         
-    if ((item = cJSON_GetObjectItem(root, "server_url")) && cJSON_IsString(item))
+    /*
+     * ⚠ 空值 = **保留原值**，和 wifi_pass / api_token 同一套规矩。
+     *
+     * 这个 handler 是 memset 从零拼配置的，所以「字段没传」或「传了空串」
+     * 默认等于**清零**。后台地址一旦被抹空，订单再也拉不下来，
+     * 而网页上一切正常 —— 又一个「看着好好的、什么都不工作」。
+     *
+     * 页面上把第二/三步锁起来只是防手滑；**真正的防线在这里**：
+     * 任何客户端（包括我自己写的脚本）都不该有能力把它清空。
+     * 要改就得传一个非空的新值。
+     */
+    if ((item = cJSON_GetObjectItem(root, "server_url")) && cJSON_IsString(item)
+        && strlen(item->valuestring) > 0) {
         strncpy(new_cfg.server_url, item->valuestring, sizeof(new_cfg.server_url) - 1);
+    } else {
+        const device_config_t *old_cfg = config_get();
+        strncpy(new_cfg.server_url, old_cfg->server_url, sizeof(new_cfg.server_url) - 1);
+    }
 
     /* Only overwrite the token if a new one is supplied (not the ******** mask). */
     if ((item = cJSON_GetObjectItem(root, "api_token")) && cJSON_IsString(item)) {
@@ -596,11 +660,22 @@ static esp_err_t post_save_handler(httpd_req_t *req)
         }
     }
 
-    if ((item = cJSON_GetObjectItem(root, "printer_ip")) && cJSON_IsString(item)) 
+    /* 同上：空值保留原值 —— 打印机 IP 被抹空 = 订单照进、票一张不出 */
+    if ((item = cJSON_GetObjectItem(root, "printer_ip")) && cJSON_IsString(item)
+        && strlen(item->valuestring) > 0) {
         strncpy(new_cfg.printer_ip, item->valuestring, sizeof(new_cfg.printer_ip) - 1);
-        
-    if ((item = cJSON_GetObjectItem(root, "printer_port")) && cJSON_IsNumber(item)) 
+    } else {
+        const device_config_t *old_cfg = config_get();
+        strncpy(new_cfg.printer_ip, old_cfg->printer_ip, sizeof(new_cfg.printer_ip) - 1);
+    }
+
+    /* 端口 0 是非法值，当"没传"处理 —— 否则清零后连不上打印机 */
+    if ((item = cJSON_GetObjectItem(root, "printer_port")) && cJSON_IsNumber(item)
+        && item->valueint > 0) {
         new_cfg.printer_port = item->valueint;
+    } else {
+        new_cfg.printer_port = config_get()->printer_port;
+    }
         
     if ((item = cJSON_GetObjectItem(root, "use_static_ip")) && cJSON_IsBool(item)) 
         new_cfg.use_static_ip = cJSON_IsTrue(item);
